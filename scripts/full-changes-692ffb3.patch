@@ -1,0 +1,2081 @@
+diff --git a/src-tauri/Cargo.toml b/src-tauri/Cargo.toml
+index bcbd9f3..ad54032 100644
+--- a/src-tauri/Cargo.toml
++++ b/src-tauri/Cargo.toml
+@@ -68,6 +68,8 @@ image = { version = "0.25", default-features = false, features = ["gif", "jpeg",
+ keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
+ tauri-plugin-log = "2.9.0"
+ tauri-plugin-single-instance = "2"
++# 记住窗口尺寸/位置/最大化状态，重启后恢复
++tauri-plugin-window-state = "2"
+ rusqlite = { version = "0.40", features = ["bundled"] }
+ tauri-plugin-global-shortcut = "2"
+ 
+@@ -114,3 +116,7 @@ opt-level = 3
+ 
+ [profile.dev.package.rquickjs-core]
+ opt-level = 2
++
++# 去掉调试符号：二进制更小，启动时映射的页更少
++[profile.release]
++strip = true
+diff --git a/src-tauri/src/api/netease/client.rs b/src-tauri/src/api/netease/client.rs
+index 25170ee..9739d91 100644
+--- a/src-tauri/src/api/netease/client.rs
++++ b/src-tauri/src/api/netease/client.rs
+@@ -5,7 +5,7 @@ use reqwest::{
+ };
+ use serde::{Deserialize, Serialize};
+ use serde_json::{json, Value};
+-use std::collections::HashSet;
++use std::collections::{HashMap, HashSet};
+ use std::future::Future;
+ use std::sync::Arc;
+ 
+@@ -466,7 +466,31 @@ impl NeteaseClient {
+             "offset": offset.to_string(),
+             "total": "true"
+         });
+-        let body = self.weapi_post(&format!("{}/weapi/cloudsearch/get/web", BASE_URL), &params).await?;
++        // cloudsearch 对登录账号返回加密 result、匿名返回 50000005，改用 search/get
++        let mut body = self.weapi_post(&format!("{}/weapi/search/get", BASE_URL), &params).await?;
++
++        // 歌曲结果补封面
++        if search_type == 1 {
++            let ids: Vec<u64> = body["result"]["songs"]
++                .as_array()
++                .map(|arr| arr.iter().filter_map(|s| s["id"].as_u64()).collect())
++                .unwrap_or_default();
++            let covers = self.song_cover_map(&ids).await;
++            if !covers.is_empty() {
++                if let Some(arr) = body["result"]["songs"].as_array_mut() {
++                    for s in arr.iter_mut() {
++                        let Some(id) = s["id"].as_u64() else { continue };
++                        let Some(url) = covers.get(&id) else { continue };
++                        if s["al"].is_object() {
++                            s["al"]["picUrl"] = json!(url);
++                        } else if s["album"].is_object() {
++                            s["album"]["picUrl"] = json!(url);
++                        }
++                    }
++                }
++            }
++        }
++
+         match json_i64(&body["code"]) {
+             Some(200) | None => Ok(body),
+             Some(code) => Err(AppError::Api(format!("netease search code {code}"))),
+@@ -482,6 +506,31 @@ impl NeteaseClient {
+         page_size: u32,
+         sort_type: u32,
+         cursor: Option<&str>,
++    ) -> AppResult<Value> {
++        self.get_resource_comments(&format!("R_SO_4_{song_id}"), page, page_size, sort_type, cursor)
++            .await
++    }
++
++    /// 专辑评论：与歌曲评论同一接口，线程前缀为 R_AL_3（专辑），歌曲是 R_SO_4
++    pub async fn get_album_comments(
++        &self,
++        album_id: u64,
++        page: u32,
++        page_size: u32,
++        sort_type: u32,
++        cursor: Option<&str>,
++    ) -> AppResult<Value> {
++        self.get_resource_comments(&format!("R_AL_3_{album_id}"), page, page_size, sort_type, cursor)
++            .await
++    }
++
++    pub async fn get_resource_comments(
++        &self,
++        thread_id: &str,
++        page: u32,
++        page_size: u32,
++        sort_type: u32,
++        cursor: Option<&str>,
+     ) -> AppResult<Value> {
+         let page = page.max(1);
+         let page_size = page_size.clamp(1, 100);
+@@ -498,7 +547,7 @@ impl NeteaseClient {
+         self.api_post(
+             &format!("{}/api/v2/resource/comments", BASE_URL),
+             &[
+-                ("threadId", format!("R_SO_4_{song_id}")),
++                ("threadId", thread_id.to_string()),
+                 ("pageNo", page.to_string()),
+                 ("pageSize", page_size.to_string()),
+                 ("sortType", sort_type.to_string()),
+@@ -510,15 +559,15 @@ impl NeteaseClient {
+     }
+ 
+     /// 楼层回复（对齐 Android getSongCommentReplies），time 为上一页游标，首页 -1
+-    pub async fn get_song_comment_replies(
++    pub async fn get_resource_comment_replies(
+         &self,
+-        song_id: u64,
++        thread_id: &str,
+         parent_comment_id: u64,
+         limit: u32,
+         cursor: Option<&str>,
+     ) -> AppResult<Value> {
+         let params = json!({
+-            "threadId": format!("R_SO_4_{song_id}"),
++            "threadId": thread_id,
+             "parentCommentId": parent_comment_id.to_string(),
+             "limit": limit.clamp(1, 100).to_string(),
+             "time": cursor.filter(|value| !value.is_empty()).unwrap_or("-1"),
+@@ -532,15 +581,15 @@ impl NeteaseClient {
+     }
+ 
+     /// 发表评论 / 回复（对齐 Android sendSongComment）：没有幂等键，只发一次，结果不确定时交给用户核对
+-    pub async fn send_song_comment(
++    pub async fn send_resource_comment(
+         &self,
+-        song_id: u64,
++        thread_id: &str,
+         content: &str,
+         reply_to: Option<u64>,
+         check_token: &str,
+     ) -> AppResult<Value> {
+         let mut params = json!({
+-            "threadId": format!("R_SO_4_{song_id}"),
++            "threadId": thread_id,
+             "content": content,
+             "checkToken": check_token,
+             "csrf_token": self.csrf_token(),
+@@ -580,35 +629,81 @@ impl NeteaseClient {
+             "s": keyword,
+             "type": "1",
+             "limit": limit.to_string(),
+-            "offset": offset.to_string(),
+-            "total": "true"
++            "offset": offset.to_string()
+         });
+ 
++        // cloudsearch/get/web 对已登录账号返回加密 result、匿名返回 50000005，
++        // 两条路径都拿不到 songs；search/get 两种状态都返回明文。
+         let body = self.weapi_post(
+-            &format!("{}/weapi/cloudsearch/get/web", BASE_URL),
++            &format!("{}/weapi/search/get", BASE_URL),
+             &params,
+         ).await?;
+ 
+         let songs = body["result"]["songs"].as_array()
+             .ok_or_else(|| AppError::Api("No search results".into()))?;
+ 
++        // search/get 不带封面，用批量详情接口补一次
++        let ids: Vec<u64> = songs.iter().filter_map(|s| s["id"].as_u64()).collect();
++        let covers = self.song_cover_map(&ids).await;
++
+         let results = songs.iter().filter_map(|s| {
++            let artists = s["ar"].as_array().or_else(|| s["artists"].as_array())?;
++            let album = if s["al"].is_object() { &s["al"] } else { &s["album"] };
++            let id = s["id"].as_u64()?;
+             Some(NeteaseSearchResult {
+-                id: s["id"].as_u64()?,
++                id,
+                 name: s["name"].as_str()?.to_string(),
+-                artists: s["ar"].as_array()?
++                artists: artists
+                     .iter()
+                     .filter_map(|a| a["name"].as_str().map(String::from))
+                     .collect(),
+-                album: s["al"]["name"].as_str().unwrap_or("").to_string(),
+-                duration_ms: s["dt"].as_u64().unwrap_or(0),
+-                cover_url: s["al"]["picUrl"].as_str().map(String::from),
++                album: album["name"].as_str().unwrap_or("").to_string(),
++                duration_ms: s["dt"].as_u64().or_else(|| s["duration"].as_u64()).unwrap_or(0),
++                cover_url: album["picUrl"]
++                    .as_str()
++                    .map(String::from)
++                    .or_else(|| covers.get(&id).cloned()),
+             })
+         }).collect();
+ 
+         Ok(results)
+     }
+ 
++    /// 批量取歌曲封面（weapi/v3/song/detail），失败时返回空表不影响搜索
++    async fn song_cover_map(&self, ids: &[u64]) -> HashMap<u64, String> {
++        if ids.is_empty() {
++            return HashMap::new();
++        }
++        let c: Vec<Value> = ids.iter().map(|id| json!({ "id": id })).collect();
++        let params = json!({ "c": serde_json::to_string(&c).unwrap_or_default() });
++        let body = match self
++            .weapi_post(&format!("{}/weapi/v3/song/detail", BASE_URL), &params)
++            .await
++        {
++            Ok(body) => body,
++            Err(error) => {
++                log::debug!(target: "netease", "song cover lookup failed: {error}");
++                return HashMap::new();
++            }
++        };
++        body["songs"]
++            .as_array()
++            .map(|songs| {
++                songs
++                    .iter()
++                    .filter_map(|s| {
++                        let id = s["id"].as_u64()?;
++                        let url = s["al"]["picUrl"].as_str()?;
++                        if url.is_empty() {
++                            return None;
++                        }
++                        Some((id, url.to_string()))
++                    })
++                    .collect()
++            })
++            .unwrap_or_default()
++    }
++
+     /// 与 Android 使用同一 EAPI 取流入口
+     pub async fn get_song_url(&self, song_id: u64, quality: &str) -> AppResult<NeteaseSongUrl> {
+         let level = match quality {
+@@ -826,6 +921,25 @@ impl NeteaseClient {
+         ).await
+     }
+ 
++    /// 向网易云歌单添加/移除歌曲（op=add / del），需要登录态与 csrf_token
++    pub async fn manipulate_playlist_tracks(
++        &self,
++        playlist_id: u64,
++        song_ids: &[u64],
++        add: bool,
++    ) -> AppResult<Value> {
++        self.weapi_post_write(
++            &format!("{}/weapi/playlist/manipulate/tracks", BASE_URL),
++            &json!({
++                "op": if add { "add" } else { "del" },
++                "pid": playlist_id.to_string(),
++                "trackIds": serde_json::to_string(song_ids).unwrap_or_default(),
++                "imme": "true",
++                "csrf_token": self.csrf_token(),
++            }),
++        ).await
++    }
++
+     /// 下载和在线播放使用同一个 EAPI 入口
+     pub async fn get_song_download_url(&self, song_id: u64, quality: &str) -> AppResult<NeteaseSongUrl> {
+         self.get_song_url(song_id, quality).await
+@@ -898,6 +1012,20 @@ impl NeteaseClient {
+         parse_json_response(resp, "netease artist songs").await
+     }
+ 
++    /// 歌手热门歌曲：顺序与官方「热门歌曲」一致，pop 为真实热度。
++    /// artist/songs 的 order=hot 已失效（pop 恒为 5、实际按专辑顺序返回），故单独取这个接口。
++    pub async fn get_artist_top_songs(&self, artist_id: u64) -> AppResult<Value> {
++        let resp = self
++            .send_with_fallback(|client| {
++                client
++                    .get(format!("{}/api/v1/artist/top/song?id={artist_id}", BASE_URL))
++                    .header("User-Agent", USER_AGENT)
++                    .header("Referer", "https://music.163.com")
++            })
++            .await?;
++        parse_json_response(resp, "netease artist top songs").await
++    }
++
+     /// 获取专辑详情
+     pub async fn get_album_detail(&self, album_id: u64) -> AppResult<Value> {
+         let resp = self
+diff --git a/src-tauri/src/commands/comment_cmd.rs b/src-tauri/src/commands/comment_cmd.rs
+index fee7142..478b5b1 100644
+--- a/src-tauri/src/commands/comment_cmd.rs
++++ b/src-tauri/src/commands/comment_cmd.rs
+@@ -340,6 +340,16 @@ fn validate_content(content: &str, limit: usize) -> AppResult<()> {
+ 
+ /// platform: netease（target = 歌曲 id）| bilibili（target = BV 号或 av 号）
+ /// sort: hot | newest | recommended（B 站没有推荐，按热门处理）
++/// 把前端 target 转成网易云评论线程 id：
++/// album:<id> → R_AL_3_<id>（专辑），其余按歌曲 R_SO_4_<id>
++fn netease_thread_id(target: &str) -> AppResult<String> {
++    if let Some(rest) = target.strip_prefix("album:") {
++        Ok(format!("R_AL_3_{}", parse_id(rest, "netease album id")?))
++    } else {
++        Ok(format!("R_SO_4_{}", parse_id(target, "netease song id")?))
++    }
++}
++
+ #[tauri::command]
+ pub async fn get_comments(
+     platform: String,
+@@ -352,9 +362,9 @@ pub async fn get_comments(
+     let page = page.unwrap_or(1).max(1);
+     match platform.as_str() {
+         "netease" => {
+-            let song_id = parse_id(&target, "netease song id")?;
++            let thread_id = netease_thread_id(&target)?;
+             let sort_type = match sort.as_str() { "newest" => 3, "recommended" => 99, _ => 2 };
+-            let body = state.netease().get_song_comments(song_id, page, PAGE_SIZE, sort_type, cursor.as_deref()).await?;
++            let body = state.netease().get_resource_comments(&thread_id, page, PAGE_SIZE, sort_type, cursor.as_deref()).await?;
+             let data = &body["data"];
+             let items = netease_items(data);
+             Ok(CommentPage {
+@@ -393,8 +403,8 @@ pub async fn get_comment_replies(
+     let root = parse_id(&comment_id, "comment id")?;
+     match platform.as_str() {
+         "netease" => {
+-            let song_id = parse_id(&target, "netease song id")?;
+-            let body = state.netease().get_song_comment_replies(song_id, root, PAGE_SIZE, cursor.as_deref()).await?;
++            let thread_id = netease_thread_id(&target)?;
++            let body = state.netease().get_resource_comment_replies(&thread_id, root, PAGE_SIZE, cursor.as_deref()).await?;
+             let data = &body["data"];
+             let items = netease_items(data);
+             // 楼中楼按时间翻页：优先取 data.time，缺失时退回本页最后一条的时间
+@@ -442,7 +452,7 @@ pub async fn send_comment(
+     match platform.as_str() {
+         "netease" => {
+             validate_content(&content, NETEASE_LENGTH_LIMIT)?;
+-            let song_id = parse_id(&target, "netease song id")?;
++            let thread_id = netease_thread_id(&target)?;
+             let reply_to = reply_to_id.as_deref().map(|id| parse_id(id, "comment id")).transpose()?;
+             if !state.netease().has_comment_login() {
+                 return Ok(CommentActionResult::failure("permission", Some(301)));
+@@ -450,7 +460,7 @@ pub async fn send_comment(
+             let Ok(token) = mint_comment_token(&app).await else {
+                 return Ok(CommentActionResult::failure("verification", None));
+             };
+-            let body = state.netease().send_song_comment(song_id, &content, reply_to, &token).await?;
++            let body = state.netease().send_resource_comment(&thread_id, &content, reply_to, &token).await?;
+             Ok(netease_result(&body))
+         }
+         "bilibili" => {
+diff --git a/src-tauri/src/commands/recommend_cmd.rs b/src-tauri/src/commands/recommend_cmd.rs
+index 5ed8af0..19d2a88 100644
+--- a/src-tauri/src/commands/recommend_cmd.rs
++++ b/src-tauri/src/commands/recommend_cmd.rs
+@@ -182,7 +182,74 @@ pub async fn like_song(
+     state: State<'_, AppState>,
+ ) -> AppResult<Value> {
+     let client = state.netease();
+-    client.like_song(song_id, like).await
++    let body = client.like_song(song_id, like).await?;
++    // 业务失败要抛出去，否则前端只能显示笼统的「同步失败」，无从定位
++    let code = body["code"].as_i64().unwrap_or(-1);
++    if code != 200 {
++        let message = body["message"].as_str().unwrap_or("netease like failed");
++        return Err(AppError::Api(format!("{message} ({code})")));
++    }
++    Ok(body)
++}
++
++/// 向网易云歌单添加歌曲（需登录；走 playlist/manipulate/tracks）
++#[tauri::command]
++pub async fn add_tracks_to_netease_playlist(
++    playlist_id: u64,
++    song_ids: Vec<u64>,
++    state: State<'_, AppState>,
++) -> AppResult<Value> {
++    if song_ids.is_empty() {
++        return Ok(serde_json::json!({ "code": 200, "count": 0 }));
++    }
++    {
++        let auth = state.auth.lock();
++        if auth.netease.is_none() {
++            return Err(AppError::Api("Netease not logged in".into()));
++        }
++    }
++    let body = state
++        .netease()
++        .manipulate_playlist_tracks(playlist_id, &song_ids, true)
++        .await?;
++    let code = body["code"].as_i64().unwrap_or(-1);
++    if code != 200 {
++        let message = body["message"]
++            .as_str()
++            .unwrap_or("netease playlist add failed");
++        return Err(AppError::Api(format!("{message} ({code})")));
++    }
++    Ok(body)
++}
++
++/// 从网易云歌单移除歌曲（需登录；走 playlist/manipulate/tracks，op=del）
++#[tauri::command]
++pub async fn remove_tracks_from_netease_playlist(
++    playlist_id: u64,
++    song_ids: Vec<u64>,
++    state: State<'_, AppState>,
++) -> AppResult<Value> {
++    if song_ids.is_empty() {
++        return Ok(serde_json::json!({ "code": 200, "count": 0 }));
++    }
++    {
++        let auth = state.auth.lock();
++        if auth.netease.is_none() {
++            return Err(AppError::Api("Netease not logged in".into()));
++        }
++    }
++    let body = state
++        .netease()
++        .manipulate_playlist_tracks(playlist_id, &song_ids, false)
++        .await?;
++    let code = body["code"].as_i64().unwrap_or(-1);
++    if code != 200 {
++        let message = body["message"]
++            .as_str()
++            .unwrap_or("netease playlist remove failed");
++        return Err(AppError::Api(format!("{message} ({code})")));
++    }
++    Ok(body)
+ }
+ 
+ /// 获取用户喜欢的歌曲 ID 列表（网易云）
+@@ -353,22 +420,48 @@ pub async fn get_netease_artist_songs(
+ ) -> AppResult<Value> {
+     let client = state.netease();
+     let page_size: u32 = 100;
++    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
+     let mut all_songs: Vec<Value> = Vec::new();
+-    let mut offset: u32 = 0;
+ 
++    // 先把官方「热门歌曲」按真实热度排好放前面：
++    // artist/songs 的 order=hot 已失效（pop 恒为 5、实际按专辑顺序），
++    // 真实热度顺序只在 artist/top/song（pop=100）里。
++    match client.get_artist_top_songs(artist_id).await {
++        Ok(body) => {
++            for song in body["songs"].as_array().cloned().unwrap_or_default() {
++                if let Some(id) = song["id"].as_u64() {
++                    if seen.insert(id) {
++                        all_songs.push(song);
++                    }
++                }
++            }
++        }
++        Err(e) => log::warn!(target: "recommend", "get_artist_top_songs failed: {}", e),
++    }
++
++    let mut offset: u32 = 0;
+     for page_index in 0..NETEASE_ARTIST_MAX_PAGES {
+         let page = match client.get_artist_songs(artist_id, "hot", offset, page_size).await {
+             Ok(page) => page,
+-            Err(e) if page_index == 0 => return Err(e),
+             Err(e) => {
+-                // 后续页失败时保留已取到的部分, 不让整页报错
++                // 首页失败且热门也没拿到才算彻底失败；否则保留已有结果
++                if page_index == 0 && all_songs.is_empty() {
++                    return Err(e);
++                }
+                 log::warn!(target: "recommend", "get_artist_songs page failed: {}", e);
+                 break;
+             }
+         };
+         let songs = page["songs"].as_array().cloned().unwrap_or_default();
+         let count = songs.len();
+-        all_songs.extend(songs);
++        // 热门已覆盖的曲目跳过，避免重复
++        for song in songs {
++            if let Some(id) = song["id"].as_u64() {
++                if seen.insert(id) {
++                    all_songs.push(song);
++                }
++            }
++        }
+         let more = page["more"].as_bool().unwrap_or(false);
+         if !more || count == 0 {
+             break;
+diff --git a/src-tauri/src/main.rs b/src-tauri/src/main.rs
+index 0ed8aa2..329514d 100644
+--- a/src-tauri/src/main.rs
++++ b/src-tauri/src/main.rs
+@@ -50,6 +50,16 @@ fn classify_playback_finish(
+     }
+ }
+ 
++/// 窗口显示后重新应用持久化的窗口状态。
++/// 插件恢复时窗口仍是隐藏的，Windows 下对隐藏窗口最大化无效，所以 show 之后再补一次。
++#[tauri::command]
++fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
++    use tauri_plugin_window_state::{StateFlags, WindowExt};
++    window
++        .restore_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
++        .map_err(|error| error.to_string())
++}
++
+ fn main() {
+     // 崩溃收集必须最早安装：之后任何线程 panic 都会把现场落盘
+     neri_player_desktop::logging::install_panic_hook(env!("CARGO_PKG_VERSION"));
+@@ -91,6 +101,8 @@ fn main() {
+         .plugin(tauri_plugin_store::Builder::new().build())
+         .plugin(tauri_plugin_dialog::init())
+         .plugin(tauri_plugin_clipboard_manager::init())
++        // 启动时恢复上次的窗口尺寸/位置/最大化状态，退出时自动保存
++        .plugin(tauri_plugin_window_state::Builder::default().build())
+         .manage(AppState::new())
+         .setup(move |app| {
+             let handle = app.handle().clone();
+@@ -448,6 +460,7 @@ fn main() {
+             desktop_lyrics_cmd::set_desktop_lyrics_lock,
+             desktop_lyrics_cmd::desktop_lyrics_hit_region,
+             desktop_lyrics_cmd::desktop_lyrics_action,
++            apply_window_state,
+             player_cmd::trace_playback_ui,
+             player_cmd::begin_playback_request,
+             player_cmd::play_file,
+@@ -594,6 +607,8 @@ fn main() {
+             recommend_cmd::get_high_quality_playlists,
+             recommend_cmd::get_high_quality_tags,
+             recommend_cmd::like_song,
++            recommend_cmd::add_tracks_to_netease_playlist,
++            recommend_cmd::remove_tracks_from_netease_playlist,
+             recommend_cmd::get_liked_song_ids,
+             recommend_cmd::get_album_detail,
+             recommend_cmd::get_netease_artist_detail,
+diff --git a/src-tauri/src/security.rs b/src-tauri/src/security.rs
+index 56f364d..d9a453b 100644
+--- a/src-tauri/src/security.rs
++++ b/src-tauri/src/security.rs
+@@ -223,25 +223,14 @@ mod encrypted_secret_storage {
+         }
+         #[cfg(target_os = "windows")]
+         {
+-            // 主机名/用户名可变，Windows MachineGuid 才是跨启动稳定的本机标识
+-            if let Ok(output) = std::process::Command::new("reg")
+-                .args([
+-                    "query",
+-                    r"HKLM\SOFTWARE\Microsoft\Cryptography",
+-                    "/v",
+-                    "MachineGuid",
+-                ])
+-                .output()
++            // 直接读注册表：spawn reg.exe 会让启动时闪一下控制台窗口，也白白多一次进程创建
++            use winreg::enums::HKEY_LOCAL_MACHINE;
++            if let Ok(key) = winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
++                .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
+             {
+-                if output.status.success() {
+-                    let text = String::from_utf8_lossy(&output.stdout);
+-                    if let Some(value) = text
+-                        .lines()
+-                        .find(|line| line.to_ascii_lowercase().contains("machineguid"))
+-                        .and_then(|line| line.split_whitespace().last())
+-                        .filter(|value| !value.is_empty())
+-                    {
+-                        return value.as_bytes().to_vec();
++                if let Ok(guid) = key.get_value::<String, _>("MachineGuid") {
++                    if !guid.is_empty() {
++                        return guid.into_bytes();
+                     }
+                 }
+             }
+diff --git a/src/components/AddToPlaylistDialog.vue b/src/components/AddToPlaylistDialog.vue
+index 98d9ad3..cbb7d2a 100644
+--- a/src/components/AddToPlaylistDialog.vue
++++ b/src/components/AddToPlaylistDialog.vue
+@@ -7,6 +7,7 @@ import { useToastStore } from '@/stores/toast'
+ import M3Input from '@/components/ui/M3Input.vue'
+ import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
+ import { localPlaylistDisplayName } from '@/modules/library/localPlaylists'
++import { resolveNeteaseCover } from '@/utils/neteaseCover'
+ import { useEscapeClose } from '@/composables/useEscapeClose'
+ import { createLogger } from '@/utils/logger'
+ 
+@@ -51,6 +52,7 @@ function coverFor(pl: PlaylistInfo): string | null {
+ }
+ 
+ const playlists = ref<PlaylistInfo[]>([])
++const neteasePlaylists = ref<PlaylistInfo[]>([])
+ const isLoading = ref(false)
+ const isSubmitting = ref(false)
+ const showCreateInput = ref(false)
+@@ -84,6 +86,56 @@ async function loadPlaylists() {
+   try {
+     await loadRequest
+   } catch { /* 错误已记录 */ }
++  void loadNeteasePlaylists()
++}
++
++/// 加载登录账号的网易云歌单；只保留自建歌单（收藏的他人歌单不可写）
++async function loadNeteasePlaylists() {
++  try {
++    const data = await invoke<any>('get_user_playlists', { platform: 'netease' })
++    const list: any[] = data?.playlist || []
++    neteasePlaylists.value = list
++      // subscribed：收藏的他人歌单不可写；specialType===5 是「我喜欢的音乐」，只能走红心接口
++      .filter(pl => pl?.id && !pl.subscribed && pl.specialType !== 5)
++      .map(pl => ({
++        id: pl.id,
++        name: pl.name,
++        track_count: pl.trackCount ?? 0,
++        modified_at: 0,
++        // 网易云返回的是 http:// 封面，需转 https 并统一尺寸，否则图片会被拦
++        cover_url: resolveNeteaseCover(pl.coverImgUrl, pl.picUrl) || null,
++      }))
++  } catch (e) {
++    // 未登录或请求失败：不展示这一组，不影响本地歌单
++    neteasePlaylists.value = []
++  }
++}
++
++/// 把当前选中曲目里网易云来源的部分加入云端歌单
++async function addToNeteasePlaylist(playlistId: number) {
++  const targets = targetTracks()
++  if (targets.length === 0 || isSubmitting.value) return
++  const ids = targets
++    .map(track => {
++      const match = /^netease:(\d+)$/.exec(track.id)
++      return match ? Number(match[1]) : null
++    })
++    .filter((id): id is number => id !== null)
++  if (ids.length === 0) {
++    toast.error(t('library.add_to_playlist_failed'))
++    return
++  }
++  isSubmitting.value = true
++  try {
++    await invoke('add_tracks_to_netease_playlist', { playlistId, songIds: ids })
++    toast.success(t('library.added_to_playlist'))
++    emit('update:open', false)
++  } catch (e) {
++    log.error('Add to netease playlist failed:', e)
++    toast.error(t('library.add_to_playlist_failed'))
++  } finally {
++    isSubmitting.value = false
++  }
+ }
+ 
+ function targetTracks(): TrackInfo[] {
+@@ -221,6 +273,8 @@ function toBackendTrack(track: TrackInfo) {
+             </button>
+           </div>
+ 
++          <!-- 本地 + 云端歌单共用一个滚动区，避免两个列表互相挤压 -->
++          <div class="atp-scroll">
+           <!-- 歌单列表 -->
+           <TransitionGroup v-if="playlists.length > 0" tag="div" name="atp-list" class="atp-list" appear>
+             <div
+@@ -261,9 +315,48 @@ function toBackendTrack(track: TrackInfo) {
+             <span class="material-symbols-rounded">progress_activity</span>
+           </div>
+ 
+-          <div v-else-if="!isLoading" class="atp-empty">
++          <div v-else-if="!isLoading && neteasePlaylists.length === 0" class="atp-empty">
+             <p>{{ t('library.playlist_empty_title') }}</p>
+           </div>
++
++          <!-- 网易云歌单：登录后可用，仅自建歌单可写 -->
++          <template v-if="neteasePlaylists.length > 0">
++            <div class="atp-section-label">{{ t('library.tab_netease_playlists') }}</div>
++            <div class="atp-list">
++              <div
++                v-for="pl in neteasePlaylists"
++                :key="'ne-' + pl.id"
++                class="atp-item"
++                :class="{ disabled: isSubmitting }"
++                @click="addToNeteasePlaylist(pl.id)"
++              >
++                <div class="atp-item-icon" :class="{ 'has-cover': coverFor(pl) }">
++                  <BilibiliCoverImage
++                    v-if="coverFor(pl) && isBilibiliCover(pl.cover_url)"
++                    :src="pl.cover_url!"
++                    class="atp-item-cover"
++                  >
++                    <span class="material-symbols-rounded filled" style="font-size: 20px">queue_music</span>
++                  </BilibiliCoverImage>
++                  <img
++                    v-else-if="coverFor(pl)"
++                    :src="pl.cover_url!"
++                    referrerpolicy="no-referrer"
++                    loading="lazy"
++                    class="atp-item-cover"
++                    alt=""
++                    @error="markCoverFailed(pl.id)"
++                  />
++                  <span v-else class="material-symbols-rounded filled" style="font-size: 20px">cloud</span>
++                </div>
++                <div class="atp-item-info">
++                  <div class="atp-item-name">{{ pl.name }}</div>
++                  <div class="atp-item-count">{{ t('library.track_count', { count: pl.track_count }) }}</div>
++                </div>
++              </div>
++            </div>
++          </template>
++          </div>
+         </div>
+       </div>
+     </Transition>
+@@ -388,18 +481,31 @@ function toBackendTrack(track: TrackInfo) {
+   &:hover { opacity: 0.9; }
+ }
+ 
+-.atp-list {
+-  display: flex;
+-  flex-direction: column;
++/* 本地与云端歌单共用同一个滚动区 */
++.atp-scroll {
++  flex: 1;
+   min-height: 0;
+   overflow-y: auto;
+   overscroll-behavior: contain;
+   scrollbar-width: none;
+-  gap: 2px;
+ 
+   &::-webkit-scrollbar { display: none; }
+ }
+ 
++.atp-section-label {
++  margin: 12px 4px 6px;
++  font-size: 12px;
++  font-weight: 600;
++  letter-spacing: 0.4px;
++  color: var(--md-on-surface-variant);
++}
++
++.atp-list {
++  display: flex;
++  flex-direction: column;
++  gap: 2px;
++}
++
+ .atp-item {
+   display: flex;
+   align-items: center;
+diff --git a/src/components/CommentsPanel.vue b/src/components/CommentsPanel.vue
+index 2b29ecb..ee6c09d 100644
+--- a/src/components/CommentsPanel.vue
++++ b/src/components/CommentsPanel.vue
+@@ -13,7 +13,7 @@ import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
+ import ContextMenu from '@/components/ui/ContextMenu.vue'
+ 
+ /// 评论（对齐 Android CommentSheet）：网易云歌曲评论与 B 站视频评论，YouTube / 本地没有评论入口
+-const props = defineProps<{ open: boolean; track: TrackInfo | null }>()
++const props = defineProps<{ open: boolean; track: TrackInfo | null; albumId?: number | null }>()
+ const emit = defineEmits<{ 'update:open': [open: boolean] }>()
+ const { t, locale } = useI18n()
+ const auth = useAuthStore()
+@@ -80,7 +80,11 @@ const PAGE_SIZE = 20
+ /** 各平台单条评论长度上限（对齐 Android commentLengthLimit） */
+ const LENGTH_LIMIT: Record<CommentTarget['platform'], number> = { netease: 140, bilibili: 1000 }
+ 
+-const target = computed(() => resolveCommentTarget(props.track))
++// 专辑评论走 netease 平台的 "album:<id>" target，后端按 R_AL_0 前缀取数
++const target = computed<CommentTarget | null>(() => {
++  if (props.albumId) return { platform: 'netease', target: `album:${props.albumId}` }
++  return resolveCommentTarget(props.track)
++})
+ const sorts = computed<CommentSort[]>(() => target.value?.platform === 'netease' ? ['hot', 'newest', 'recommended'] : ['hot', 'newest'])
+ const sort = ref<CommentSort>('hot')
+ /** 切换排序时新结果出来前保留旧列表（对齐 Android pendingSort），失败可继续浏览 */
+diff --git a/src/components/SideNav.vue b/src/components/SideNav.vue
+index 1232132..8abc1ab 100644
+--- a/src/components/SideNav.vue
++++ b/src/components/SideNav.vue
+@@ -60,10 +60,12 @@ const activeSection = computed(() => (route.meta.section as string) ?? route.nam
+   display: flex;
+   flex-direction: column;
+   align-items: center;
++  justify-content: center;
+   background: var(--md-surface-container-low);
+   border-right: 1px solid var(--md-surface-container-high);
+   flex-shrink: 0;
+-  padding: 12px 0;
++  /* 居中后整体上移约一个图标高度：底部多留 120px，居中时相当于上移 60px */
++  padding: 12px 0 132px;
+ }
+ 
+ .nav-list {
+diff --git a/src/i18n/en.json b/src/i18n/en.json
+index b73ec43..14ce80c 100644
+--- a/src/i18n/en.json
++++ b/src/i18n/en.json
+@@ -778,6 +778,7 @@
+     "load_failed": "Failed to load",
+     "too_many_failures": "Too many playback failures, stopped",
+     "like_cloud_sync_failed": "Liked locally, but cloud sync failed",
++    "like_cloud_copyright_limited": "Liked locally; this track is copyright-restricted and cannot be synced",
+     "retry": "Retry",
+     "empty_playlist": "Empty playlist",
+     "queue": "Queue",
+diff --git a/src/i18n/ja.json b/src/i18n/ja.json
+index 27b96c9..545e319 100644
+--- a/src/i18n/ja.json
++++ b/src/i18n/ja.json
+@@ -778,6 +778,7 @@
+     "load_failed": "読み込みに失敗",
+     "too_many_failures": "再生の失敗が続いたため停止しました",
+     "like_cloud_sync_failed": "ローカルでお気に入り登録しましたが、クラウド同期に失敗しました",
++    "like_cloud_copyright_limited": "ローカルでお気に入り登録しました。この曲は著作権の制限によりクラウド同期できません",
+     "retry": "再試行",
+     "empty_playlist": "プレイリストが空です",
+     "queue": "再生キュー",
+diff --git a/src/i18n/zh-CN.json b/src/i18n/zh-CN.json
+index 1440133..aeb035b 100644
+--- a/src/i18n/zh-CN.json
++++ b/src/i18n/zh-CN.json
+@@ -778,6 +778,7 @@
+     "load_failed": "加载失败",
+     "too_many_failures": "连续播放失败过多，已停止",
+     "like_cloud_sync_failed": "已在本地收藏，但云端同步失败",
++    "like_cloud_copyright_limited": "已在本地收藏；该歌曲受版权限制，暂不支持云端同步",
+     "retry": "重试",
+     "empty_playlist": "歌单为空",
+     "queue": "播放队列",
+diff --git a/src/i18n/zh-TW.json b/src/i18n/zh-TW.json
+index e9d7d30..7747350 100644
+--- a/src/i18n/zh-TW.json
++++ b/src/i18n/zh-TW.json
+@@ -778,6 +778,7 @@
+     "load_failed": "載入失敗",
+     "too_many_failures": "連續播放失敗過多，已停止",
+     "like_cloud_sync_failed": "已在本機收藏，但雲端同步失敗",
++    "like_cloud_copyright_limited": "已在本機收藏；該歌曲受版權限制，暫不支援雲端同步",
+     "retry": "重試",
+     "empty_playlist": "歌單為空",
+     "queue": "播放佇列",
+diff --git a/src/main.ts b/src/main.ts
+index 46f065b..32cfb19 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -3,7 +3,7 @@ import { createLogger } from '@/utils/logger'
+ import { createPinia } from 'pinia'
+ import { createRouter, createWebHistory } from 'vue-router'
+ import { getCurrentWindow } from '@tauri-apps/api/window'
+-import { isTauri } from '@tauri-apps/api/core'
++import { isTauri, invoke } from '@tauri-apps/api/core'
+ import i18n from './i18n'
+ import { initTheme } from './utils/theme'
+ import { installHostBackgroundSync } from './utils/hostBackground'
+@@ -92,8 +92,14 @@ async function mountWindow() {
+   installClipboardPasteGuard()
+   installHostBackgroundSync()
+ 
+-  // Vue 挂载完成后显示窗口，避免闪烁
+-  if (isTauri()) void getCurrentWindow().show().catch(() => {})
++  // Vue 挂载完成后显示窗口，避免闪烁；显示后再补一次窗口状态恢复
++  // （隐藏状态下 Windows 不允许最大化，插件那一次恢复会丢掉 maximized）
++  if (isTauri()) {
++    void getCurrentWindow()
++      .show()
++      .then(() => invoke('apply_window_state'))
++      .catch(() => {})
++  }
+ }
+ 
+ void mountWindow()
+diff --git a/src/modules/library/artistTabs.scss b/src/modules/library/artistTabs.scss
+index 148bc30..8616836 100644
+--- a/src/modules/library/artistTabs.scss
++++ b/src/modules/library/artistTabs.scss
+@@ -1,27 +1,28 @@
+ .artist-tabs {
+   display: flex;
+-  padding: 4px;
+-  border-radius: 24px;
+-  background: var(--md-surface-container);
+-  margin-bottom: 12px;
++  flex-wrap: wrap;
++  gap: 8px;
++  margin-bottom: 14px;
+ }
+ 
+ .artist-tab {
+-  flex: 1;
++  flex: 0 0 auto;
+   display: inline-flex;
+   align-items: center;
+   justify-content: center;
+   gap: 6px;
+-  height: 42px;
+-  border-radius: 20px;
+-  font-size: 14px;
+-  font-weight: 600;
++  height: 34px;
++  padding: 0 18px;
++  border-radius: var(--radius-full);
++  background: var(--md-surface-container);
++  font-size: 13px;
++  font-weight: 500;
+   color: var(--md-on-surface-variant);
+   transition: background var(--duration-short, 150ms), color var(--duration-short, 150ms);
+ 
+-  .material-symbols-rounded { font-size: 19px; }
++  .material-symbols-rounded { font-size: 17px; }
+ 
+-  &:hover { background: color-mix(in srgb, var(--md-on-surface) 6%, transparent); }
++  &:hover { background: var(--md-surface-container-high); }
+ 
+   &.active {
+     background: var(--md-secondary-container);
+diff --git a/src/modules/library/neteaseHome.ts b/src/modules/library/neteaseHome.ts
+index f069ecf..9d19f07 100644
+--- a/src/modules/library/neteaseHome.ts
++++ b/src/modules/library/neteaseHome.ts
+@@ -2,9 +2,9 @@ import type { TrackInfo } from '@/stores/player'
+ import { COVER_SIZE_LIST, withCoverSize } from '@/utils/trackCover'
+ 
+ export const NETEASE_HOME_SECTIONS = [
++  { key: 'daily_recommend', titleKey: 'home.daily_recommend', kind: 'songs', requiresLogin: true, icon: 'today' },
+   { key: 'personal_radar', titleKey: 'home.radar', kind: 'songs', requiresLogin: false, icon: 'radar' },
+   { key: 'radar_playlists', titleKey: 'home.radar_playlists', kind: 'radar', requiresLogin: false, icon: 'explore' },
+-  { key: 'daily_recommend', titleKey: 'home.daily_recommend', kind: 'songs', requiresLogin: true, icon: 'today' },
+   { key: 'private_fm', titleKey: 'home.private_fm', kind: 'songs', requiresLogin: true, icon: 'radio' },
+   { key: 'top_soaring', titleKey: 'home.trending', kind: 'songs', requiresLogin: false, icon: 'bolt' },
+   { key: 'personalized_new_songs', titleKey: 'home.new_songs', kind: 'songs', requiresLogin: false, icon: 'new_releases' },
+diff --git a/src/stores/likedSongs.ts b/src/stores/likedSongs.ts
+index db2e0f4..80417e3 100644
+--- a/src/stores/likedSongs.ts
++++ b/src/stores/likedSongs.ts
+@@ -151,9 +151,14 @@ export const useLikedSongsStore = defineStore('likedSongs', () => {
+               )
+             }
+           })
+-          .catch(() => {
++          .catch((e) => {
++            const reason = e instanceof Error ? e.message : String(e)
++            // 524「环境异常」与 401「下架」都是网易云的版权受限掩码，换个说法避免误导用户
++            const limited = /524|401|环境异常|下架/.test(reason)
+             useToastStore().show(
+-              (i18n.global as any).t('player.like_cloud_sync_failed'),
++              limited
++                ? (i18n.global as any).t('player.like_cloud_copyright_limited')
++                : `${(i18n.global as any).t('player.like_cloud_sync_failed')} — ${reason}`,
+               'info',
+             )
+           })
+diff --git a/src/stores/player.ts b/src/stores/player.ts
+index b03b12d..8f5c2cd 100644
+--- a/src/stores/player.ts
++++ b/src/stores/player.ts
+@@ -140,6 +140,11 @@ export interface TrackInfo {
+   fileModifiedMs?: number
+   syncPayload?: Record<string, unknown>
+   playlistKey?: string
++  /// 网易云曲目的歌手/专辑 id，用于歌手页与专辑页跳转（其他来源没有）
++  artistId?: number
++  albumId?: number
++  /// 完整歌手列表：多歌手时用于弹出选择菜单
++  artists?: Array<{ id?: number; name: string }>
+ }
+ 
+ export interface AudioEffectsRuntimeStats {
+diff --git a/src/stores/recommend.ts b/src/stores/recommend.ts
+index d90e931..d7a25de 100644
+--- a/src/stores/recommend.ts
++++ b/src/stores/recommend.ts
+@@ -448,21 +448,18 @@ export const useRecommendStore = defineStore('recommend', () => {
+ 
+   /** 喜欢/取消喜欢歌曲 */
+   async function toggleLikeSong(songId: number, like: boolean): Promise<boolean> {
+-    try {
+-      const data = await invoke<any>('like_song', { songId, like })
+-      if (data?.code === 200) {
+-        if (like) {
+-          likedSongIds.value.add(songId)
+-        } else {
+-          likedSongIds.value.delete(songId)
+-        }
+-        return true
++    const data = await invoke<any>('like_song', { songId, like })
++    if (data?.code === 200) {
++      if (like) {
++        likedSongIds.value.add(songId)
++      } else {
++        likedSongIds.value.delete(songId)
+       }
+-      return false
+-    } catch (e) {
+-      log.error('toggleLikeSong:', e)
+-      return false
++      return true
+     }
++    // 不再吞异常：把业务码交给调用方，避免上层只剩一句笼统的「同步失败」
++    log.error('toggleLikeSong failed:', data)
++    throw new Error(`code=${data?.code ?? 'unknown'}`)
+   }
+ 
+   /** 获取专辑详情 */
+diff --git a/src/views/FavoritePlaylistView.vue b/src/views/FavoritePlaylistView.vue
+index ecfcd95..9ac8ae9 100644
+--- a/src/views/FavoritePlaylistView.vue
++++ b/src/views/FavoritePlaylistView.vue
+@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
+ import { normalizeTrack, usePlayerStore, type TrackInfo } from '@/stores/player'
+ import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
+ import ContextMenu from '@/components/ui/ContextMenu.vue'
++import { neteaseSongArtists } from '@/modules/library/artistNavigation'
+ import LocateTrackFab from '@/components/LocateTrackFab.vue'
+ import { useLocateCurrentTrack } from '@/composables/useLocateCurrentTrack'
+ import { useIncrementalList } from '@/composables/useIncrementalList'
+@@ -103,6 +104,70 @@ function closeTrackMenu() {
+ 
+ const { downloadMenuItem, downloadFromMenu } = useTrackDownloadMenu(() => trackMenu.value.track, closeTrackMenu)
+ 
++
++function neteaseSongIdOf(track: TrackInfo): number | null {
++  const match = /^netease:(\d+)$/.exec(track.id)
++  return match ? Number(match[1]) : null
++}
++
++function isNeteaseTrack(track: TrackInfo): boolean {
++  return neteaseSongIdOf(track) !== null
++}
++
++/// 曲目行歌手名：单歌手直接跳转，多歌手弹菜单。
++/// 这里的曲目来自数据库，没有预存歌手 id，点开时查一次歌曲详情。
++async function openTrackArtistMenu(event: MouseEvent, track: TrackInfo) {
++  const songId = neteaseSongIdOf(track)
++  if (!songId) return
++  try {
++    const detail = await invoke('get_netease_song_detail', { songId })
++    const artists = neteaseSongArtists(detail, songId)
++    if (artists.length === 0) return
++    if (artists.length === 1) {
++      router.push({ name: 'netease-artist', params: { id: artists[0].id } })
++      return
++    }
++    artistMenu.value = {
++      show: true,
++      x: event.clientX,
++      y: event.clientY,
++      items: artists.map(artist =>
++        createContextMenuItem(artist.name, { id: String(artist.id), icon: 'person' }),
++      ),
++    }
++  } catch (e) {
++    log.error('open track artist failed:', e)
++  }
++}
++
++function handleArtistMenuClick(item: ContextMenuActionItem) {
++  artistMenu.value.show = false
++  const id = Number(item.id)
++  if (Number.isSafeInteger(id) && id > 0) {
++    router.push({ name: 'netease-artist', params: { id } })
++  }
++}
++
++/// 曲目行专辑名：点击时取一次详情拿专辑 id
++async function openTrackAlbum(track: TrackInfo) {
++  const songId = neteaseSongIdOf(track)
++  if (!songId) return
++  try {
++    const detail = await invoke<any>('get_netease_song_detail', { songId })
++    const song = (detail?.songs || []).find((item: any) => Number(item?.id) === songId)
++    const albumId = Number(song?.al?.id)
++    if (Number.isSafeInteger(albumId) && albumId > 0) {
++      router.push({ name: 'netease-album', params: { id: albumId } })
++    }
++  } catch (e) {
++    log.error('open track album failed:', e)
++  }
++}
++
++/// 多歌手选择菜单（点曲目行的歌手名时弹出）
++const artistMenu = ref<{ show: boolean; x: number; y: number; items: ContextMenuItem[] }>({
++  show: false, x: 0, y: 0, items: [],
++})
+ const trackMenuItems = computed<ContextMenuItem[]>(() => [
+   createContextMenuItem(t('player.play_next'), { id: 'play-next', icon: 'queue_play_next' }),
+   createContextMenuItem(t('player.add_to_queue'), { id: 'add-to-queue', icon: 'add_to_queue' }),
+@@ -218,7 +283,21 @@ onMounted(load)
+           </div>
+           <div class="track-info">
+             <div class="track-title">{{ track.title }}</div>
+-            <div class="track-meta">{{ track.artist }}</div>
++            <div class="track-meta">
++              <span
++                class="meta-link"
++                :class="{ 'meta-link--static': !isNeteaseTrack(track) }"
++                @click.stop="openTrackArtistMenu($event, track)"
++              >{{ track.artist }}</span>
++              <template v-if="track.album">
++                <span class="meta-sep"> · </span>
++                <span
++                  class="meta-link"
++                  :class="{ 'meta-link--static': !isNeteaseTrack(track) }"
++                  @click.stop="openTrackAlbum(track)"
++                >{{ track.album }}</span>
++              </template>
++            </div>
+           </div>
+           <div class="track-duration">{{ formatDuration(track.durationMs) }}</div>
+         </div>
+@@ -239,6 +318,16 @@ onMounted(load)
+       @update:open="(value: boolean) => { if (!value) closeTrackMenu() }"
+       @click="handleTrackMenuClick"
+     />
++
++    <ContextMenu
++      :open="artistMenu.show"
++      :x="artistMenu.x"
++      :y="artistMenu.y"
++      :items="artistMenu.items"
++      @update:open="artistMenu.show = $event"
++      @click="handleArtistMenuClick"
++    />
++
+   </div>
+ </template>
+ 
+@@ -319,4 +408,24 @@ onMounted(load)
+ @keyframes fav-spin {
+   to { transform: rotate(360deg); }
+ }
++
++/* 曲目行的歌手/专辑：有歌曲 id 才可点 */
++.meta-link {
++  cursor: pointer;
++  transition: color var(--duration-short);
++
++  &:hover {
++    color: var(--md-primary);
++    text-decoration: underline;
++  }
++
++  &.meta-link--static {
++    cursor: inherit;
++    pointer-events: none;
++  }
++}
++
++.meta-sep {
++  white-space: pre;
++}
+ </style>
+diff --git a/src/views/LibraryView.vue b/src/views/LibraryView.vue
+index 4cce29f..d39a969 100644
+--- a/src/views/LibraryView.vue
++++ b/src/views/LibraryView.vue
+@@ -91,10 +91,35 @@ const tabKeyToIndex: Record<string, number> = {
+ }
+ type NeteaseCategory = 'playlists' | 'albums'
+ const neteaseCategory = ref<NeteaseCategory>('playlists')
+-const initialTab = typeof route.query.tab === 'string' ? (tabKeyToIndex[route.query.tab] ?? 0) : 0
++
++// 记住上次停留的分区：存 key 而不是下标，避免以后增删 tab 时错位
++const LIBRARY_TAB_STORAGE_KEY = 'neriplayer.library.tab'
++
++function readSavedTabIndex(): number | null {
++  try {
++    const key = localStorage.getItem(LIBRARY_TAB_STORAGE_KEY)
++    if (!key) return null
++    const index = tabKeyToIndex[key]
++    return typeof index === 'number' ? index : null
++  } catch {
++    return null
++  }
++}
++
++// 路由显式指定优先，其次上次停留的分区，最后回落到「本地」
++const routeTab = typeof route.query.tab === 'string' ? tabKeyToIndex[route.query.tab] : undefined
++const initialTab = routeTab ?? readSavedTabIndex() ?? 0
+ if (route.query.tab === 'netease_albums') neteaseCategory.value = 'albums'
+ const activeTab = ref(initialTab)
+ 
++watch(activeTab, (index) => {
++  const key = tabs.value[index]?.key
++  if (!key) return
++  try {
++    localStorage.setItem(LIBRARY_TAB_STORAGE_KEY, key)
++  } catch { /* 存储不可用时忽略，不影响使用 */ }
++})
++
+ // 监听路由 query 变化（同页面内导航）
+ watch(() => route.query.tab, (tab) => {
+   if (typeof tab === 'string' && tab in tabKeyToIndex) {
+diff --git a/src/views/LocalPlaylistView.vue b/src/views/LocalPlaylistView.vue
+index 434df2f..92683b0 100644
+--- a/src/views/LocalPlaylistView.vue
++++ b/src/views/LocalPlaylistView.vue
+@@ -31,6 +31,7 @@ import {
+ import { localPlaylistDisplayName } from '@/modules/library/localPlaylists'
+ import { recordPlaylistOpen } from '@/modules/library/playlistUsage'
+ import { createLogger } from '@/utils/logger'
++import { neteaseSongArtists } from '@/modules/library/artistNavigation'
+ import { formatTrackDuration as formatDuration } from '@/utils/timeFormat'
+ 
+ const log = createLogger('local-playlist-view')
+@@ -305,6 +306,10 @@ async function loadDetail(options: { silent?: boolean } = {}) {
+ const trackMenu = ref<{ show: boolean; x: number; y: number; track: TrackInfo | null; index: number }>({
+   show: false, x: 0, y: 0, track: null, index: -1,
+ })
++/// 多歌手选择菜单（点曲目行的歌手名时弹出）
++const artistMenu = ref<{ show: boolean; x: number; y: number; items: ContextMenuItem[] }>({
++  show: false, x: 0, y: 0, items: [],
++})
+ const showAddToPlaylist = ref(false)
+ const addToPlaylistTarget = ref<TrackInfo | null>(null)
+ const addToPlaylistTargets = ref<TrackInfo[]>([])
+@@ -321,6 +326,65 @@ function openTrackMenu(e: MouseEvent, track: TrackInfo, index: number) {
+   trackMenu.value = { show: true, x, y: rect.top, track, index }
+ }
+ 
++function neteaseSongIdOf(track: TrackInfo): number | null {
++  const match = /^netease:(\d+)$/.exec(track.id)
++  return match ? Number(match[1]) : null
++}
++
++function isNeteaseTrack(track: TrackInfo): boolean {
++  return neteaseSongIdOf(track) !== null
++}
++
++/// 曲目行歌手名：单歌手直接跳转，多歌手弹菜单。
++/// 本地歌单没预存歌手 id（曲目来自数据库），点开时查一次歌曲详情。
++async function openTrackArtistMenu(event: MouseEvent, track: TrackInfo) {
++  const songId = neteaseSongIdOf(track)
++  if (!songId) return
++  try {
++    const detail = await invoke('get_netease_song_detail', { songId })
++    const artists = neteaseSongArtists(detail, songId)
++    if (artists.length === 0) return
++    if (artists.length === 1) {
++      router.push({ name: 'netease-artist', params: { id: artists[0].id } })
++      return
++    }
++    artistMenu.value = {
++      show: true,
++      x: event.clientX,
++      y: event.clientY,
++      items: artists.map(artist =>
++        createContextMenuItem(artist.name, { id: String(artist.id), icon: 'person' }),
++      ),
++    }
++  } catch (e) {
++    log.error('open track artist failed:', e)
++  }
++}
++
++function handleArtistMenuClick(item: ContextMenuActionItem) {
++  artistMenu.value.show = false
++  const id = Number(item.id)
++  if (Number.isSafeInteger(id) && id > 0) {
++    router.push({ name: 'netease-artist', params: { id } })
++  }
++}
++
++/// 曲目行专辑名：点击时取一次详情拿专辑 id
++async function openTrackAlbum(track: TrackInfo) {
++  const songId = neteaseSongIdOf(track)
++  if (!songId) return
++  try {
++    const detail = await invoke<any>('get_netease_song_detail', { songId })
++    const song = (detail?.songs || []).find((item: any) => Number(item?.id) === songId)
++    const albumId = Number(song?.al?.id)
++    if (Number.isSafeInteger(albumId) && albumId > 0) {
++      router.push({ name: 'netease-album', params: { id: albumId } })
++    }
++  } catch (e) {
++    log.error('open track album failed:', e)
++  }
++}
++
+ function openTrackContextMenu(e: MouseEvent, track: TrackInfo, index: number) {
+   if (selectionMode.value) {
+     toggleSelected(trackSelectionKey(track))
+@@ -985,7 +1049,21 @@ onUnmounted(() => {
+           </div>
+           <div class="track-info">
+             <div class="track-title">{{ track.title }}</div>
+-            <div class="track-meta">{{ track.artist }}<template v-if="displayAlbum(track.album)"> · {{ displayAlbum(track.album) }}</template></div>
++            <div class="track-meta">
++              <span
++                class="meta-link"
++                :class="{ 'meta-link--static': !isNeteaseTrack(track) }"
++                @click.stop="openTrackArtistMenu($event, track)"
++              >{{ track.artist }}</span>
++              <template v-if="displayAlbum(track.album)">
++                <span class="meta-sep"> · </span>
++                <span
++                  class="meta-link"
++                  :class="{ 'meta-link--static': !isNeteaseTrack(track) }"
++                  @click.stop="openTrackAlbum(track)"
++                >{{ displayAlbum(track.album) }}</span>
++              </template>
++            </div>
+           </div>
+           <span
+             v-if="downloadStore.isDownloaded(track.id)"
+@@ -1026,6 +1104,16 @@ onUnmounted(() => {
+       @click="handleTrackMenuClick"
+     />
+ 
++    <ContextMenu
++      :open="artistMenu.show"
++      :x="artistMenu.x"
++      :y="artistMenu.y"
++      :items="artistMenu.items"
++      @update:open="artistMenu.show = $event"
++      @click="handleArtistMenuClick"
++    />
++
++
+     <!-- 删除确认对话框 -->
+     <M3Dialog
+       v-model:open="showRemoveDialog"
+@@ -1290,4 +1378,24 @@ onUnmounted(() => {
+   color: var(--md-on-surface-variant);
+   line-height: 1.5;
+ }
++
++/* 曲目行的歌手/专辑：有歌曲 id 才可点 */
++.meta-link {
++  cursor: pointer;
++  transition: color var(--duration-short);
++
++  &:hover {
++    color: var(--md-primary);
++    text-decoration: underline;
++  }
++
++  &.meta-link--static {
++    cursor: inherit;
++    pointer-events: none;
++  }
++}
++
++.meta-sep {
++  white-space: pre;
++}
+ </style>
+diff --git a/src/views/NeteaseArtistView.vue b/src/views/NeteaseArtistView.vue
+index e00419e..450855f 100644
+--- a/src/views/NeteaseArtistView.vue
++++ b/src/views/NeteaseArtistView.vue
+@@ -256,48 +256,35 @@ onUnmounted(() => { generation++ })
+     </div>
+ 
+     <template v-else>
+-      <!-- Hero 卡片 (对齐 Android ArtistHeaderCard: 封面大图 + 底部渐变 + 圆头像/名称/别名) -->
++      <!-- 歌手头部：无背景图，圆形头像 + 右侧信息并排（对齐网易云） -->
+       <div class="artist-hero-card">
+-        <div class="artist-hero-media">
++        <div class="artist-avatar">
+           <BilibiliCoverImage
+-            v-if="header?.coverUrl || header?.avatarUrl"
+-            :src="header.coverUrl || header.avatarUrl"
+-            class="artist-hero-img"
++            v-if="header?.avatarUrl || header?.coverUrl"
++            :src="header.avatarUrl || header.coverUrl"
+           />
+-          <div v-else class="artist-hero-img artist-hero-img--empty">
+-            <span class="material-symbols-rounded" style="font-size: 56px; opacity: 0.3">account_circle</span>
+-          </div>
+-          <div class="artist-hero-scrim" />
+-          <div class="artist-hero-identity">
+-            <div class="artist-avatar">
+-              <BilibiliCoverImage
+-                v-if="header?.avatarUrl || header?.coverUrl"
+-                :src="header.avatarUrl || header.coverUrl"
+-              />
+-              <span v-else class="material-symbols-rounded">account_circle</span>
++          <span v-else class="material-symbols-rounded">account_circle</span>
++        </div>
++        <div class="artist-hero-info">
++          <div class="artist-hero-titleline">
++            <h1 class="artist-name">{{ header?.name || String(route.query.name || '') }}</h1>
++            <div class="artist-stat-chips">
++              <span class="artist-stat-chip">{{ songCountLabel }}</span>
++              <span class="artist-stat-chip">{{ albumCountLabel }}</span>
+             </div>
+-            <div class="artist-identity-text">
+-              <h1>{{ header?.name || String(route.query.name || '') }}</h1>
+-              <p v-if="header?.alias">{{ header.alias }}</p>
++            <div class="artist-hero-actions">
++              <button class="play-all-btn" :disabled="!tracks.length" @click="playAll">
++                <span class="material-symbols-rounded filled">play_arrow</span>
++                {{ t('player.play_all') }}
++              </button>
++              <button class="artist-follow-btn" :class="{ active: following }" :disabled="changing || !header?.name" @click="toggleFollow">
++                <span class="material-symbols-rounded">{{ following ? 'check' : 'person_add' }}</span>
++                {{ t(following ? 'player.artist_unsubscribe' : 'player.artist_subscribe') }}
++              </button>
+             </div>
+           </div>
+-        </div>
+-        <div class="artist-hero-body">
+-          <div class="artist-stat-chips">
+-            <span class="artist-stat-chip">{{ songCountLabel }}</span>
+-            <span class="artist-stat-chip">{{ albumCountLabel }}</span>
+-          </div>
++          <p v-if="header?.alias" class="artist-alias">{{ header.alias }}</p>
+           <p v-if="header?.briefDesc" class="artist-brief">{{ header.briefDesc }}</p>
+-          <div class="artist-hero-actions">
+-            <button class="play-all-btn" :disabled="!tracks.length" @click="playAll">
+-              <span class="material-symbols-rounded filled">play_arrow</span>
+-              {{ t('player.play_all') }}
+-            </button>
+-            <button class="artist-follow-btn" :class="{ active: following }" :disabled="changing || !header?.name" @click="toggleFollow">
+-              <span class="material-symbols-rounded">{{ following ? 'check' : 'person_add' }}</span>
+-              {{ t(following ? 'player.artist_unsubscribe' : 'player.artist_subscribe') }}
+-            </button>
+-          </div>
+         </div>
+       </div>
+ 
+@@ -361,15 +348,15 @@ onUnmounted(() => { generation++ })
+         </div>
+       </div>
+ 
+-      <!-- 专辑列表 -->
+-      <div v-else key="artist-albums" class="artist-album-list">
++      <!-- 专辑列表：网格卡片，对齐网易云专辑墙 -->
++      <div v-else key="artist-albums" class="artist-album-grid">
+         <div v-if="filteredAlbums.length === 0" class="state-center">
+           <p>{{ t(search ? 'player.no_results' : 'player.artist_albums_empty') }}</p>
+         </div>
+         <div
+           v-for="album in filteredAlbums"
+           :key="album.id"
+-          class="artist-album-item"
++          class="artist-album-card"
+           role="button"
+           tabindex="0"
+           @click="openAlbum(album)"
+@@ -382,14 +369,11 @@ onUnmounted(() => { generation++ })
+             </BilibiliCoverImage>
+             <span v-else class="material-symbols-rounded filled">album</span>
+           </div>
+-          <div class="artist-album-info">
+-            <div class="artist-album-name">{{ album.name }}</div>
+-            <div class="artist-album-meta">
+-              {{ [album.publishYear, album.size ? t('player.track_count', { count: album.size }) : '']
+-                .filter(Boolean).join(' · ') }}
+-            </div>
++          <div class="artist-album-name" :title="album.name">{{ album.name }}</div>
++          <div class="artist-album-meta">
++            {{ [album.publishYear, album.size ? t('player.track_count', { count: album.size }) : '']
++              .filter(Boolean).join(' · ') }}
+           </div>
+-          <span class="material-symbols-rounded" style="font-size: 18px; opacity: 0.3">chevron_right</span>
+         </div>
+       </div>
+       </Transition>
+@@ -421,58 +405,18 @@ onUnmounted(() => { generation++ })
+   .search-input { min-width: 0; }
+ }
+ 
+-// Hero 卡片
++// 歌手头部：无背景图，头像与信息左右并排（对齐网易云）
+ .artist-hero-card {
+-  border-radius: 28px;
+-  overflow: hidden;
+-  background: var(--md-surface-container);
+-  margin-bottom: 16px;
+-}
+-
+-.artist-hero-media {
+-  position: relative;
+-  height: 240px;
+-}
+-
+-.artist-hero-img {
+-  width: 100%;
+-  height: 100%;
+-  object-fit: cover;
+-  display: block;
+-
+-  :deep(img) {
+-    width: 100%;
+-    height: 100%;
+-    object-fit: cover;
+-  }
+-
+-  &--empty {
+-    display: flex;
+-    align-items: center;
+-    justify-content: center;
+-    background: var(--md-surface-variant);
+-  }
+-}
+-
+-.artist-hero-scrim {
+-  position: absolute;
+-  inset: 0;
+-  background: linear-gradient(to bottom, transparent 40%, rgba(0, 0, 0, 0.55));
+-}
+-
+-.artist-hero-identity {
+-  position: absolute;
+-  left: 20px;
+-  right: 20px;
+-  bottom: 16px;
+   display: flex;
+   align-items: center;
+-  gap: 14px;
++  gap: 20px;
++  padding: 4px 2px 18px;
++  margin-bottom: 4px;
+ }
+ 
+ .artist-avatar {
+-  width: 64px;
+-  height: 64px;
++  width: 120px;
++  height: 120px;
+   border-radius: 50%;
+   overflow: hidden;
+   flex-shrink: 0;
+@@ -480,7 +424,6 @@ onUnmounted(() => { generation++ })
+   display: flex;
+   align-items: center;
+   justify-content: center;
+-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+ 
+   :deep(img) {
+     width: 100%;
+@@ -488,73 +431,90 @@ onUnmounted(() => { generation++ })
+     object-fit: cover;
+   }
+ 
+-  .material-symbols-rounded { font-size: 40px; opacity: 0.5; }
++  .material-symbols-rounded { font-size: 64px; opacity: 0.35; }
+ }
+ 
+-.artist-identity-text {
++.artist-hero-info {
++  flex: 1;
+   min-width: 0;
++}
+ 
+-  h1 {
+-    margin: 0;
+-    font-size: 24px;
+-    font-weight: 700;
+-    color: #fff;
+-    overflow: hidden;
+-    text-overflow: ellipsis;
+-    white-space: nowrap;
+-    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.4);
+-  }
++/* 名字/统计/按钮同处第一行，按钮靠右；空间不足时自动换行而不是挤压名字 */
++.artist-hero-titleline {
++  display: flex;
++  align-items: baseline;
++  flex-wrap: wrap;
++  gap: 6px 12px;
++}
+ 
+-  p {
+-    margin: 2px 0 0;
+-    font-size: 13px;
+-    color: rgba(255, 255, 255, 0.82);
+-    overflow: hidden;
+-    text-overflow: ellipsis;
+-    white-space: nowrap;
+-  }
++.artist-name {
++  margin: 0;
++  font-size: 26px;
++  font-weight: 700;
++  line-height: 1.2;
++  color: var(--md-on-surface);
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
+ }
+ 
+-.artist-hero-body {
+-  padding: 16px 20px 20px;
++.artist-alias {
++  margin: 5px 0 0;
++  font-size: 12px;
++  color: var(--md-on-surface-variant);
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
+ }
+ 
+ .artist-stat-chips {
+   display: flex;
+-  gap: 8px;
++  gap: 6px;
+   flex-wrap: wrap;
+ }
+ 
+ .artist-stat-chip {
+   display: inline-flex;
+   align-items: center;
+-  height: 30px;
+-  padding: 0 14px;
++  height: 22px;
++  padding: 0 10px;
+   border-radius: var(--radius-full);
+   border: 1px solid var(--md-outline-variant);
+   color: var(--md-on-surface-variant);
+-  font-size: 12px;
++  font-size: 11px;
+   font-weight: 600;
+ }
+ 
+ .artist-brief {
+-  margin: 12px 0 0;
+-  font-size: 13px;
+-  line-height: 1.6;
++  margin: 8px 0 0;
++  font-size: 12px;
++  line-height: 1.5;
+   color: var(--md-on-surface-variant);
+   display: -webkit-box;
+-  -webkit-line-clamp: 3;
++  -webkit-line-clamp: 2;
+   -webkit-box-orient: vertical;
+   overflow: hidden;
+ }
+ 
+ .artist-hero-actions {
+-  margin-top: 14px;
++  margin-left: auto;
+   display: flex;
+-  gap: 10px;
++  gap: 8px;
++  flex-shrink: 0;
++  align-self: center;
+ 
+-  .play-all-btn { margin-top: 0; }
++  /* 局部收窄按钮，避免把第一行撑高（不影响其他页面的 play-all-btn） */
++  .play-all-btn {
++    margin-top: 0;
++    padding: 8px 18px;
++    font-size: 13px;
++  }
+   .play-all-btn:disabled { opacity: 0.4; pointer-events: none; }
++
++  .artist-follow-btn {
++    padding: 8px 16px;
++    font-size: 13px;
++  }
+ }
+ 
+ .artist-follow-btn {
+@@ -572,35 +532,51 @@ onUnmounted(() => { generation++ })
+   .material-symbols-rounded { font-size: 18px; }
+ }
+ 
+-// 专辑行
+-.artist-album-list {
+-  display: flex;
+-  flex-direction: column;
+-  gap: 4px;
++// 专辑网格：卡片式，对齐网易云专辑墙
++.artist-album-grid {
++  display: grid;
++  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
++  gap: 26px 18px;
++  padding: 4px 2px 10px;
++  align-content: start;
++}
++
++/* 空态/错误态占满整行，不占一个格子 */
++.artist-album-grid .state-center {
++  grid-column: 1 / -1;
+ }
+ 
+-.artist-album-item {
++.artist-album-card {
+   display: flex;
+-  align-items: center;
+-  gap: 14px;
+-  padding: 10px 12px;
+-  border-radius: 16px;
++  flex-direction: column;
++  gap: 8px;
++  min-width: 0;
+   cursor: pointer;
+-  transition: background var(--duration-short, 150ms);
++  transition: transform var(--duration-short, 150ms);
++
++  &:hover .artist-album-cover {
++    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
++  }
+ 
+-  &:hover { background: var(--md-surface-container); }
++  &:hover .artist-album-name {
++    color: var(--md-primary);
++  }
++
++  &:active {
++    transform: scale(0.98);
++  }
+ }
+ 
+ .artist-album-cover {
+-  width: 56px;
+-  height: 56px;
+-  border-radius: 12px;
++  width: 100%;
++  aspect-ratio: 1 / 1;
++  border-radius: 10px;
+   overflow: hidden;
+-  flex-shrink: 0;
+   background: var(--md-surface-variant);
+   display: flex;
+   align-items: center;
+   justify-content: center;
++  transition: box-shadow var(--duration-short, 150ms);
+ 
+   :deep(img) {
+     width: 100%;
+@@ -608,25 +584,24 @@ onUnmounted(() => { generation++ })
+     object-fit: cover;
+   }
+ 
+-  .material-symbols-rounded { font-size: 26px; opacity: 0.4; }
+-}
+-
+-.artist-album-info {
+-  flex: 1;
+-  min-width: 0;
++  .material-symbols-rounded { font-size: 32px; opacity: 0.35; }
+ }
+ 
+ .artist-album-name {
+   font-size: 14px;
+-  font-weight: 600;
++  font-weight: 500;
++  line-height: 1.35;
++  color: var(--md-on-surface);
++  display: -webkit-box;
++  -webkit-line-clamp: 2;
++  -webkit-box-orient: vertical;
+   overflow: hidden;
+-  text-overflow: ellipsis;
+-  white-space: nowrap;
++  transition: color var(--duration-short, 150ms);
+ }
+ 
+ .artist-album-meta {
+-  margin-top: 2px;
+   font-size: 12px;
+   color: var(--md-on-surface-variant);
++  margin-top: -4px;
+ }
+ </style>
+diff --git a/src/views/NeteasePlaylistView.vue b/src/views/NeteasePlaylistView.vue
+index 30ba9db..8df95f2 100644
+--- a/src/views/NeteasePlaylistView.vue
++++ b/src/views/NeteasePlaylistView.vue
+@@ -5,11 +5,14 @@ import { useRoute, useRouter } from 'vue-router'
+ import { usePlayerStore, type TrackInfo } from '@/stores/player'
+ import { useAuthStore } from '@/stores/auth'
+ import { useDownloadStore } from '@/stores/download'
++import { useToastStore } from '@/stores/toast'
++import { createLogger } from '@/utils/logger'
+ import { useDelayedFlag } from '@/composables/useDelayedFlag'
+ import { useI18n } from 'vue-i18n'
+ import { invoke } from '@tauri-apps/api/core'
+ import AddToPlaylistDialog from '@/components/AddToPlaylistDialog.vue'
+ import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
++import CommentsPanel from '@/components/CommentsPanel.vue'
+ import ContextMenu from '@/components/ui/ContextMenu.vue'
+ import TrackSelectionToolbar from '@/components/TrackSelectionToolbar.vue'
+ import LocateTrackFab from '@/components/LocateTrackFab.vue'
+@@ -38,6 +41,8 @@ const player = usePlayerStore()
+ const { onTrackClick, onTrackDoubleClick } = useTrackActivation()
+ const auth = useAuthStore()
+ const downloadStore = useDownloadStore()
++const toast = useToastStore()
++const log = createLogger('netease-playlist')
+ const { t, locale } = useI18n()
+ 
+ const isLoading = ref(true)
+@@ -50,9 +55,14 @@ const trackCount = ref(0)
+ const playCount = ref(0)
+ const description = ref('')
+ const creator = ref('')
++/// 专辑艺人 id：只有专辑详情才有，用于「点歌手名跳转歌手页」
++const creatorId = ref<number | null>(null)
++const showComments = ref(false)
+ const searchQuery = ref('')
+ 
+ const tracks = ref<TrackInfo[]>([])
++/// 当前详情的缓存键，移除曲目后需要就地更新缓存，避免返回时又看到已删的歌
++const detailCacheKey = ref('')
+ 
+ interface NeteaseDetailCache {
+   playlistName: string
+@@ -61,6 +71,8 @@ interface NeteaseDetailCache {
+   playCount: number
+   description: string
+   creator: string
++  /// 专辑艺人 id（旧缓存没有该字段时为 undefined，不影响读取）
++  creatorId?: number | null
+   tracks: TrackInfo[]
+ }
+ 
+@@ -71,6 +83,7 @@ function applyDetailCache(cache: NeteaseDetailCache) {
+   playCount.value = cache.playCount
+   description.value = cache.description
+   creator.value = cache.creator
++  creatorId.value = cache.creatorId ?? null
+   tracks.value = cache.tracks
+ }
+ 
+@@ -82,6 +95,7 @@ function saveDetailCache(cacheKey: string) {
+     playCount: playCount.value,
+     description: description.value,
+     creator: creator.value,
++    creatorId: creatorId.value,
+     tracks: tracks.value,
+   })
+ }
+@@ -149,6 +163,7 @@ async function loadDetail() {
+   )
+   isLoading.value = true
+   error.value = null
++  detailCacheKey.value = cacheKey
+   const cached = previewCachedDetail<NeteaseDetailCache>(cacheKey, (detail) => {
+     applyDetailCache(detail)
+     isLoading.value = false
+@@ -170,6 +185,7 @@ async function loadDetail() {
+       coverUrl.value = albumCover
+       description.value = album.description || ''
+       creator.value = album.artist?.name || ''
++      creatorId.value = album.artist?.id ?? null
+ 
+       const songs = data?.songs || []
+       tracks.value = songs.map((s: any) => ({
+@@ -181,6 +197,9 @@ async function loadDetail() {
+         // 专辑曲目 al.picUrl 常为空，回退到专辑封面
+         coverUrl: resolveNeteaseCover(s.al?.picUrl, s.al?.pic, albumCover) || albumCover,
+         audioUrl: '',
++        artistId: s.ar?.[0]?.id ?? album.artist?.id ?? undefined,
++        albumId: s.al?.id ?? albumId.value ?? undefined,
++        artists: (s.ar || []).map((a: any) => ({ id: a.id, name: a.name })),
+       }))
+       trackCount.value = tracks.value.length
+     } else {
+@@ -193,6 +212,8 @@ async function loadDetail() {
+       playCount.value = pl.playCount || 0
+       description.value = pl.description || ''
+       creator.value = pl.creator?.nickname || ''
++      // 歌单作者是用户不是歌手，没有歌手页可跳
++      creatorId.value = null
+ 
+       const songs = pl.tracks || []
+       tracks.value = songs.map((s: any) => ({
+@@ -203,6 +224,9 @@ async function loadDetail() {
+         durationMs: s.dt || 0,
+         coverUrl: resolveNeteaseCover(s.al?.picUrl, s.al?.pic),
+         audioUrl: '',
++        artistId: s.ar?.[0]?.id ?? undefined,
++        albumId: s.al?.id ?? undefined,
++        artists: (s.ar || []).map((a: any) => ({ id: a.id, name: a.name })),
+       }))
+     }
+     saveDetailCache(cacheKey)
+@@ -230,6 +254,49 @@ function playAll() {
+   player.playAll(tracks.value)
+ }
+ 
++/// 专辑评论用的资源 id（歌单没有评论入口，故仅在专辑页给出）
++const albumId = computed(() => (props.isAlbum ? Number(route.params.id) || null : null))
++
++/// 专辑艺人页跳转
++function openCreator() {
++  if (!creatorId.value) return
++  router.push({ name: 'netease-artist', params: { id: creatorId.value } })
++}
++
++/// 曲目行歌手名：单歌手直接跳转，多歌手弹出选择菜单（与播放页交互一致）
++function openTrackArtistMenu(event: MouseEvent, track: TrackInfo) {
++  const artists = (track.artists || []).filter(a => a.id)
++  if (artists.length === 0) {
++    if (track.artistId) router.push({ name: 'netease-artist', params: { id: track.artistId } })
++    return
++  }
++  if (artists.length === 1) {
++    router.push({ name: 'netease-artist', params: { id: artists[0].id } })
++    return
++  }
++  artistMenu.value = {
++    show: true,
++    x: event.clientX,
++    y: event.clientY,
++    items: artists.map(artist =>
++      createContextMenuItem(artist.name, { id: String(artist.id), icon: 'person' }),
++    ),
++  }
++}
++
++function handleArtistMenuClick(item: ContextMenuActionItem) {
++  artistMenu.value.show = false
++  const id = Number(item.id)
++  if (Number.isSafeInteger(id) && id > 0) {
++    router.push({ name: 'netease-artist', params: { id } })
++  }
++}
++
++/// 曲目行专辑名跳转
++function openAlbumPage(id: number) {
++  router.push({ name: 'netease-album', params: { id } })
++}
++
+ function shufflePlay() {
+   if (tracks.value.length === 0) return
+   player.shufflePlay(tracks.value)
+@@ -264,6 +331,10 @@ function formatPlayCount(count: number): string {
+ const trackMenu = ref<{ show: boolean; x: number; y: number; track: TrackInfo | null }>({
+   show: false, x: 0, y: 0, track: null,
+ })
++/// 多歌手选择菜单：点曲目行的歌手名时弹出（单歌手直接跳转）
++const artistMenu = ref<{ show: boolean; x: number; y: number; items: ContextMenuItem[] }>({
++  show: false, x: 0, y: 0, items: [],
++})
+ const showAddToPlaylist = ref(false)
+ const addToPlaylistTarget = ref<TrackInfo | null>(null)
+ const addToPlaylistTargets = ref<TrackInfo[]>([])
+@@ -377,6 +448,16 @@ const trackMenuItems = computed<ContextMenuItem[]>(() => {
+         disabled: !track || isTrackDownloadDisabled(track),
+       },
+     ),
++    // 专辑页没有「从歌单移除」的概念，只在自己的歌单页提供
++    ...(props.isAlbum
++      ? []
++      : [
++          createContextMenuItem(t('library.remove_from_playlist'), {
++            id: 'remove-from-playlist',
++            icon: 'delete',
++            danger: true,
++          }),
++        ]),
+   ]
+ })
+ 
+@@ -401,6 +482,30 @@ function handleTrackMenuClick(item: ContextMenuActionItem) {
+     case 'download':
+       void handleTrackDownload(track)
+       break
++    case 'remove-from-playlist':
++      void removeTrackFromPlaylist(track)
++      break
++  }
++}
++
++/// 从当前网易云歌单移除单曲（仅自己的歌单可写，接口会校验归属）
++async function removeTrackFromPlaylist(track: TrackInfo) {
++  closeTrackMenu()
++  const playlistId = Number(route.params.id)
++  const match = /^netease:(\d+)$/.exec(track.id)
++  if (!playlistId || !match) return
++  try {
++    await invoke('remove_tracks_from_netease_playlist', {
++      playlistId,
++      songIds: [Number(match[1])],
++    })
++    tracks.value = tracks.value.filter(item => item.id !== track.id)
++    trackCount.value = Math.max(0, trackCount.value - 1)
++    if (detailCacheKey.value) saveDetailCache(detailCacheKey.value)
++    toast.success(t('library.removed_tracks', { count: 1 }))
++  } catch (e) {
++    log.error('Remove track from netease playlist failed:', e)
++    toast.error(t('library.remove_tracks_failed'))
+   }
+ }
+ 
+@@ -453,7 +558,18 @@ onMounted(() => {
+         </div>
+         <div class="hero-info">
+           <h1 class="hero-title">{{ playlistName }}</h1>
+-          <p v-if="creator" class="hero-creator">{{ creator }}</p>
++          <p v-if="creator" class="hero-creator">
++            <span
++              v-if="creatorId"
++              class="creator-link"
++              role="link"
++              tabindex="0"
++              :title="t('player.view_artist', { name: creator })"
++              @click="openCreator"
++              @keydown.enter="openCreator"
++            >{{ creator }}</span>
++            <template v-else>{{ creator }}</template>
++          </p>
+           <p class="hero-meta">
+             {{ t('player.track_count', { count: trackCount }) }} · {{ totalDuration }}
+             <span v-if="playCount"> · {{ formatPlayCount(playCount) }}</span>
+@@ -470,6 +586,16 @@ onMounted(() => {
+             <button class="hero-icon-btn" :title="t('common.multi_select')" @click="enterSelectionMode()">
+               <span class="material-symbols-rounded">checklist</span>
+             </button>
++            <!-- 专辑评论入口：图标与播放页评论按钮保持一致 -->
++            <button
++              v-if="isAlbum"
++              class="hero-icon-btn"
++              :title="t('player.comments')"
++              :aria-label="t('player.comments')"
++              @click="showComments = true"
++            >
++              <span class="material-symbols-rounded">chat_bubble</span>
++            </button>
+           </div>
+         </div>
+       </div>
+@@ -522,7 +648,21 @@ onMounted(() => {
+           </div>
+           <div class="track-info">
+             <div class="track-title">{{ track.title }}</div>
+-            <div class="track-meta">{{ track.artist }}<template v-if="track.album"> · {{ track.album }}</template></div>
++            <div class="track-meta">
++              <span
++                class="meta-link"
++                :class="{ 'meta-link--static': !track.artistId }"
++                @click.stop="openTrackArtistMenu($event, track)"
++              >{{ track.artist }}</span>
++              <template v-if="track.album">
++                <span class="meta-sep"> · </span>
++                <span
++                  class="meta-link"
++                  :class="{ 'meta-link--static': !track.albumId }"
++                  @click.stop="track.albumId && openAlbumPage(track.albumId)"
++                >{{ track.album }}</span>
++              </template>
++            </div>
+           </div>
+           <div class="track-duration">{{ formatDuration(track.durationMs) }}</div>
+           <button v-if="!selectionMode" class="track-more" @click.stop="openTrackMenu($event, track)">
+@@ -548,13 +688,54 @@ onMounted(() => {
+       @click="handleTrackMenuClick"
+     />
+ 
++    <ContextMenu
++      :open="artistMenu.show"
++      :x="artistMenu.x"
++      :y="artistMenu.y"
++      :items="artistMenu.items"
++      @update:open="artistMenu.show = $event"
++      @click="handleArtistMenuClick"
++    />
++
+     <AddToPlaylistDialog v-model:open="showAddToPlaylist" :track="addToPlaylistTarget" :tracks="addToPlaylistTargets" />
++    <CommentsPanel v-model:open="showComments" :track="null" :album-id="albumId" />
+   </div>
+ </template>
+ 
+ <style scoped lang="scss">
+ @use '@/styles/detail-view.scss' as *;
+ 
++.creator-link {
++  cursor: pointer;
++  transition: color var(--duration-short);
++
++  &:hover,
++  &:focus-visible {
++    color: var(--md-primary);
++    text-decoration: underline;
++  }
++}
++
++/* 曲目行的歌手/专辑：有 id 才可点，否则保持纯文本外观 */
++.meta-link {
++  cursor: pointer;
++  transition: color var(--duration-short);
++
++  &:hover {
++    color: var(--md-primary);
++    text-decoration: underline;
++  }
++
++  &.meta-link--static {
++    cursor: inherit;
++    pointer-events: none;
++  }
++}
++
++.meta-sep {
++  white-space: pre;
++}
++
+ .track-more {
+   width: 32px;
+   height: 32px;
