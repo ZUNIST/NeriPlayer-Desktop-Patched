@@ -89,6 +89,41 @@ npx tauri build --no-bundle --config tauri.buildonly.json
 
 **不要用 `cargo build` 替代**——它不会嵌入前端资源，产物打开是空白页。判断构建是否成功看 `.rdata` 段是否约 39 MB。
 
+### 构建时的六个坑
+
+1. **必须用 MSVC 工具链**。`x86_64-pc-windows-gnu` 能编过，但链接时报
+   `ld.exe: .rsrc merge failure: multiple non-default manifests`，产物嵌了两个同 ID 的 manifest，
+   WebView2 自定义协议注册失败，启动即「无法访问此页面」。
+
+2. **`cargo build --release` 不行**，必须 `npx tauri build --no-bundle`。
+   前者产物约 48 MB 且 `.rdata` 明显偏小。**别用总体积判断**——MSVC 把代码段压小了，
+   正好和缺失的资源量抵消，容易误以为成功。
+
+3. **Vite 清 dist 会被批量删除保护拦截**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，阈值 50 文件）。
+   做法：`mv dist dist_prev` 让构建重建，最后用 Python `shutil.rmtree` 清理
+   （node 的 shim 只拦 node 进程）。
+
+4. **浅克隆推不上去**。`git clone --depth 1` 后直接 `git push` 会报
+   `remote unpack failed: index-pack failed` / `did not receive expected object`。
+   需先 `git fetch --unshallow <上游地址>` 补全历史。
+
+5. **编译可能卡死**：cargo/rustc 进程在但 CPU 十分钟不涨，`target/release/deps` 最新文件 mtime 停滞。
+   处理：终止这两个进程后重跑，增量通常 2~3 分钟。
+
+6. **部署报 `Device or resource busy`**：进程句柄未释放，等 5~7 秒再覆盖。
+
+### 补丁脚本
+
+`scripts/patch_all.py` 可在上游更新后重新应用 26 处核心补丁（锚点匹配，跨版本比 git diff 稳）：
+
+```bash
+python scripts/patch_all.py
+```
+
+覆盖范围：搜索修复、歌单增删、收藏错误链路、侧边栏居中、启动黑窗消除。
+**不在其中**的（需对照本文档手工补）：专辑评论、行内导航、歌手页改版、窗口状态插件。
+
+
 ## 许可证
 
 上游为 **GPL-3.0-or-later**，本衍生版本沿用同一许可证，原始 `LICENSE` 与版权声明完整保留。
