@@ -38,7 +38,58 @@
 - `comment_cmd.rs`：`get_comments` 的 `target` 支持 `album:<id>` 前缀，新增 `netease_thread_id()` 统一解析；发评论、楼层回复也走同一解析
 - 前端：专辑页在「全部播放」右侧新增评论按钮，图标与播放页一致（`chat_bubble`）
 
-## 4. 行内歌手 / 专辑跳转
+## 4. 评论点赞 / 发评论的安全验证
+
+网易云的评论写操作（点赞、发评论、回复）不认普通 cookie，必须带**易盾 checkToken**。
+
+### 踩坑记录
+
+**① 纯 HTTP 取令牌的接口已下线**
+
+```
+POST /weapi/comment/checktoken/get
+→ {"code": 404, "message": "接口未找到！"}
+```
+
+不带令牌直接点赞的返回：
+
+```json
+{"code": 250, "msg": "系统检测到您的设备存在安全风险，请更换设备后再尝试操作哦"}
+```
+
+**② 只能靠隐藏 WebView 跑易盾脚本**
+
+`comment_token.rs` 的做法：新建一个 WebView → 打开 `music.163.com` → 注入 `acstatic-dun.126.net/tool.min.js` → `initWatchman` → `WM.getToken(businessId)` → 通过导航到保留域名的回调地址把令牌交回 Rust。
+
+**③ 关键：窗口不能 `visible(false)`**
+
+```rust
+.visible(false)   // ❌ 这样写永远拿不到令牌
+```
+
+隐藏窗口里 `document.visibilityState === 'hidden'`，易盾据此判定为自动化环境，`getToken` 直接回调空字符串，前端表现为**「安全验证未通过」**。
+
+必须让窗口处于"可见"状态（`visibleState === 'visible'`）。
+
+**④ 但窗口又不能真的让用户看到**
+
+按这个顺序试过，记录结果供参考：
+
+| 做法 | 结果 |
+|---|---|
+| `visible(false)` | 验证失败 |
+| `visible(true)` + 创建后 `set_position(-4000,-4000)` | 功能正常，但屏幕中央**闪一下** |
+| `visible(false)` → `set_position` → `show()` | 验证失败（`visibilityState` 切换是异步的） |
+| `visible(true)` + builder `.position(-32000,-32000)` | 坐标被 Windows 忽略，回落居中 |
+| `visible(true)` + builder `.position(-4000,-4000)` | 仍居中（位置参数未生效） |
+| `visible(true)` + Win32 `SetWindowPos` 到 -4000 | 仍闪（窗口已在屏幕上画了一帧） |
+| **`visible(true)` + `always_on_bottom(true)`** | **当前采用**：被主窗口盖住，功能稳定，仅在主窗口非全屏时可能露出 |
+
+**结论**：功能优先。窗口视觉上的残留需要更底层的处理（比如创建时即 0×0 再 resize），收益不大，暂不深究。
+
+
+
+## 5. 行内歌手 / 专辑跳转
 
 曲目行的歌手名与专辑名可点击跳转对应页面。
 
@@ -47,14 +98,14 @@
 - 本地歌单与「我喜欢的音乐」没有预存 id，点击时查询一次 `get_netease_song_detail`
 - **多歌手**（`ar` 长度 > 1）弹出选择菜单，单歌手直接跳转
 
-## 5. 歌手页
+## 6. 歌手页
 
 - **热门排序**：上游用 `/api/v1/artist/songs?order=hot`，但该接口的 `hot` 排序已失效（`pop` 恒为 5.0，实际按专辑顺序返回）。改为先取 `/api/v1/artist/top/song`（`pop` 为真实热度，顺序与官方一致），再接全量分页、按 id 去重
 - **专辑墙**：竖排列表改为网格卡片（`auto-fill, minmax(148px, 1fr)`）
 - **头部紧凑化**：去掉全宽背景图，改为 120px 圆形头像 + 右侧信息；歌手名、统计、按钮同处第一行，整体高度由约 200px 降至约 140px
 - **Tab**：由两个等宽胶囊改为左对齐的紧凑胶囊
 
-## 6. 其他改进
+## 7. 其他改进
 
 | 项 | 说明 |
 |---|---|
@@ -65,7 +116,7 @@
 | 侧边栏 | 图标组垂直居中并上移约一个图标高度 |
 | 收藏提示 | 失败时透出业务码；`524`/`401` 分流为「该歌曲受版权限制，暂不支持云端同步」 |
 
-## 7. 已知限制（非客户端可解）
+## 8. 已知限制（非客户端可解）
 
 `/weapi/song/like` 对**数字专辑 / 独家首发**曲目返回：
 

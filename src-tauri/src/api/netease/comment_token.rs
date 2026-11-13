@@ -91,8 +91,15 @@ pub async fn mint_comment_token(app: &AppHandle) -> AppResult<String> {
             &label,
             WebviewUrl::External(PAGE_URL.parse().expect("static URL")),
         )
-        .visible(false)
+        // 窗口必须"可见"（visible），否则 document.visibilityState 为 hidden，易盾拒签令牌。
+        // 位置参数在部分 Windows 版本被忽略，于是改用"压到最底层"：
+        // always_on_bottom 让窗口永远被主窗口盖住，用户看不到；页面仍算可见。
+        .visible(true)
+        .position(-4000.0, -4000.0)
+        .inner_size(320.0, 480.0)
+        .focused(false)
         .skip_taskbar(true)
+        .always_on_bottom(true)
         .user_agent(USER_AGENT)
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         .on_navigation(move |url| {
@@ -113,7 +120,31 @@ pub async fn mint_comment_token(app: &AppHandle) -> AppResult<String> {
         })
         .main_browser_args(&builder_app)
         .build()
-        .map(WindowGuard);
+        .map(|window| {
+            // Tauri 的 position() 在部分 Windows 版本会被忽略（窗口仍停在屏幕中央）。
+            // 先试封装层，再用 Win32 SetWindowPos 兜底强制挪出屏幕。
+            let _ = window.set_position(tauri::PhysicalPosition::new(-4000, -4000));
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+                };
+                if let Ok(handle) = window.hwnd() {
+                    unsafe {
+                        SetWindowPos(
+                            handle.0 as *mut core::ffi::c_void,
+                            std::ptr::null_mut(),
+                            -4000,
+                            -4000,
+                            0,
+                            0,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                        );
+                    }
+                }
+            }
+            WindowGuard(window)
+        });
         let _ = created_tx.send(window);
     })
     .map_err(|_| AppError::Api("NetEase comment token window could not be scheduled".into()))?;
