@@ -778,6 +778,7 @@
     "load_failed": "載入失敗",
     "too_many_failures": "連續播放失敗過多，已停止",
     "like_cloud_sync_failed": "已在本機收藏，但雲端同步失敗",
+    "like_cloud_copyright_limited": "已在本機收藏；該歌曲受版權限制，暫不支援雲端同步",
     "retry": "重試",
     "empty_playlist": "歌單為空",
     "queue": "播放佇列",

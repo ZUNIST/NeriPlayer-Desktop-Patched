@@ -151,9 +151,14 @@ export const useLikedSongsStore = defineStore('likedSongs', () => {
               )
             }
           })
-          .catch(() => {
+          .catch((e) => {
+            const reason = e instanceof Error ? e.message : String(e)
+            // 524「环境异常」与 401「下架」都是网易云的版权受限掩码，换个说法避免误导用户
+            const limited = /524|401|环境异常|下架/.test(reason)
             useToastStore().show(
-              (i18n.global as any).t('player.like_cloud_sync_failed'),
+              limited
+                ? (i18n.global as any).t('player.like_cloud_copyright_limited')
+                : `${(i18n.global as any).t('player.like_cloud_sync_failed')} — ${reason}`,
               'info',
             )
           })

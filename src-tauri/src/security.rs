@@ -223,25 +223,14 @@ mod encrypted_secret_storage {
         }
         #[cfg(target_os = "windows")]
         {
-            // 主机名/用户名可变，Windows MachineGuid 才是跨启动稳定的本机标识
-            if let Ok(output) = std::process::Command::new("reg")
-                .args([
-                    "query",
-                    r"HKLM\SOFTWARE\Microsoft\Cryptography",
-                    "/v",
-                    "MachineGuid",
-                ])
-                .output()
+            // 直接读注册表：spawn reg.exe 会让启动时闪一下控制台窗口，也白白多一次进程创建
+            use winreg::enums::HKEY_LOCAL_MACHINE;
+            if let Ok(key) = winreg::RegKey::predef(HKEY_LOCAL_MACHINE)
+                .open_subkey(r"SOFTWARE\Microsoft\Cryptography")
             {
-                if output.status.success() {
-                    let text = String::from_utf8_lossy(&output.stdout);
-                    if let Some(value) = text
-                        .lines()
-                        .find(|line| line.to_ascii_lowercase().contains("machineguid"))
-                        .and_then(|line| line.split_whitespace().last())
-                        .filter(|value| !value.is_empty())
-                    {
-                        return value.as_bytes().to_vec();
+                if let Ok(guid) = key.get_value::<String, _>("MachineGuid") {
+                    if !guid.is_empty() {
+                        return guid.into_bytes();
                     }
                 }
             }

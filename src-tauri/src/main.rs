@@ -50,6 +50,16 @@ fn classify_playback_finish(
     }
 }
 
+/// 窗口显示后重新应用持久化的窗口状态。
+/// 插件恢复时窗口仍是隐藏的，Windows 下对隐藏窗口最大化无效，所以 show 之后再补一次。
+#[tauri::command]
+fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
+    use tauri_plugin_window_state::{StateFlags, WindowExt};
+    window
+        .restore_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+        .map_err(|error| error.to_string())
+}
+
 fn main() {
     // 崩溃收集必须最早安装：之后任何线程 panic 都会把现场落盘
     neri_player_desktop::logging::install_panic_hook(env!("CARGO_PKG_VERSION"));
@@ -91,6 +101,8 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        // 启动时恢复上次的窗口尺寸/位置/最大化状态，退出时自动保存
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(AppState::new())
         .setup(move |app| {
             let handle = app.handle().clone();
@@ -448,6 +460,7 @@ fn main() {
             desktop_lyrics_cmd::set_desktop_lyrics_lock,
             desktop_lyrics_cmd::desktop_lyrics_hit_region,
             desktop_lyrics_cmd::desktop_lyrics_action,
+            apply_window_state,
             player_cmd::trace_playback_ui,
             player_cmd::begin_playback_request,
             player_cmd::play_file,
@@ -594,6 +607,8 @@ fn main() {
             recommend_cmd::get_high_quality_playlists,
             recommend_cmd::get_high_quality_tags,
             recommend_cmd::like_song,
+            recommend_cmd::add_tracks_to_netease_playlist,
+            recommend_cmd::remove_tracks_from_netease_playlist,
             recommend_cmd::get_liked_song_ids,
             recommend_cmd::get_album_detail,
             recommend_cmd::get_netease_artist_detail,

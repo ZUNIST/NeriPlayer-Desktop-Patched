@@ -778,6 +778,7 @@
     "load_failed": "読み込みに失敗",
     "too_many_failures": "再生の失敗が続いたため停止しました",
     "like_cloud_sync_failed": "ローカルでお気に入り登録しましたが、クラウド同期に失敗しました",
+    "like_cloud_copyright_limited": "ローカルでお気に入り登録しました。この曲は著作権の制限によりクラウド同期できません",
     "retry": "再試行",
     "empty_playlist": "プレイリストが空です",
     "queue": "再生キュー",

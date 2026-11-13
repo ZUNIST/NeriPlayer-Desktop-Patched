@@ -140,6 +140,11 @@ export interface TrackInfo {
   fileModifiedMs?: number
   syncPayload?: Record<string, unknown>
   playlistKey?: string
+  /// 网易云曲目的歌手/专辑 id，用于歌手页与专辑页跳转（其他来源没有）
+  artistId?: number
+  albumId?: number
+  /// 完整歌手列表：多歌手时用于弹出选择菜单
+  artists?: Array<{ id?: number; name: string }>
 }
 
 export interface AudioEffectsRuntimeStats {

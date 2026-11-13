@@ -91,9 +91,34 @@ const tabKeyToIndex: Record<string, number> = {
 }
 type NeteaseCategory = 'playlists' | 'albums'
 const neteaseCategory = ref<NeteaseCategory>('playlists')
-const initialTab = typeof route.query.tab === 'string' ? (tabKeyToIndex[route.query.tab] ?? 0) : 0
+
+// 记住上次停留的分区：存 key 而不是下标，避免以后增删 tab 时错位
+const LIBRARY_TAB_STORAGE_KEY = 'neriplayer.library.tab'
+
+function readSavedTabIndex(): number | null {
+  try {
+    const key = localStorage.getItem(LIBRARY_TAB_STORAGE_KEY)
+    if (!key) return null
+    const index = tabKeyToIndex[key]
+    return typeof index === 'number' ? index : null
+  } catch {
+    return null
+  }
+}
+
+// 路由显式指定优先，其次上次停留的分区，最后回落到「本地」
+const routeTab = typeof route.query.tab === 'string' ? tabKeyToIndex[route.query.tab] : undefined
+const initialTab = routeTab ?? readSavedTabIndex() ?? 0
 if (route.query.tab === 'netease_albums') neteaseCategory.value = 'albums'
 const activeTab = ref(initialTab)
+
+watch(activeTab, (index) => {
+  const key = tabs.value[index]?.key
+  if (!key) return
+  try {
+    localStorage.setItem(LIBRARY_TAB_STORAGE_KEY, key)
+  } catch { /* 存储不可用时忽略，不影响使用 */ }
+})
 
 // 监听路由 query 变化（同页面内导航）
 watch(() => route.query.tab, (tab) => {

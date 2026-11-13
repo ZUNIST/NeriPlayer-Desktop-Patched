@@ -7,6 +7,7 @@ import { useToastStore } from '@/stores/toast'
 import M3Input from '@/components/ui/M3Input.vue'
 import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
 import { localPlaylistDisplayName } from '@/modules/library/localPlaylists'
+import { resolveNeteaseCover } from '@/utils/neteaseCover'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { createLogger } from '@/utils/logger'
 
@@ -51,6 +52,7 @@ function coverFor(pl: PlaylistInfo): string | null {
 }
 
 const playlists = ref<PlaylistInfo[]>([])
+const neteasePlaylists = ref<PlaylistInfo[]>([])
 const isLoading = ref(false)
 const isSubmitting = ref(false)
 const showCreateInput = ref(false)
@@ -84,6 +86,56 @@ async function loadPlaylists() {
   try {
     await loadRequest
   } catch { /* 错误已记录 */ }
+  void loadNeteasePlaylists()
+}
+
+/// 加载登录账号的网易云歌单；只保留自建歌单（收藏的他人歌单不可写）
+async function loadNeteasePlaylists() {
+  try {
+    const data = await invoke<any>('get_user_playlists', { platform: 'netease' })
+    const list: any[] = data?.playlist || []
+    neteasePlaylists.value = list
+      // subscribed：收藏的他人歌单不可写；specialType===5 是「我喜欢的音乐」，只能走红心接口
+      .filter(pl => pl?.id && !pl.subscribed && pl.specialType !== 5)
+      .map(pl => ({
+        id: pl.id,
+        name: pl.name,
+        track_count: pl.trackCount ?? 0,
+        modified_at: 0,
+        // 网易云返回的是 http:// 封面，需转 https 并统一尺寸，否则图片会被拦
+        cover_url: resolveNeteaseCover(pl.coverImgUrl, pl.picUrl) || null,
+      }))
+  } catch (e) {
+    // 未登录或请求失败：不展示这一组，不影响本地歌单
+    neteasePlaylists.value = []
+  }
+}
+
+/// 把当前选中曲目里网易云来源的部分加入云端歌单
+async function addToNeteasePlaylist(playlistId: number) {
+  const targets = targetTracks()
+  if (targets.length === 0 || isSubmitting.value) return
+  const ids = targets
+    .map(track => {
+      const match = /^netease:(\d+)$/.exec(track.id)
+      return match ? Number(match[1]) : null
+    })
+    .filter((id): id is number => id !== null)
+  if (ids.length === 0) {
+    toast.error(t('library.add_to_playlist_failed'))
+    return
+  }
+  isSubmitting.value = true
+  try {
+    await invoke('add_tracks_to_netease_playlist', { playlistId, songIds: ids })
+    toast.success(t('library.added_to_playlist'))
+    emit('update:open', false)
+  } catch (e) {
+    log.error('Add to netease playlist failed:', e)
+    toast.error(t('library.add_to_playlist_failed'))
+  } finally {
+    isSubmitting.value = false
+  }
 }
 
 function targetTracks(): TrackInfo[] {
@@ -221,6 +273,8 @@ function toBackendTrack(track: TrackInfo) {
             </button>
           </div>
 
+          <!-- 本地 + 云端歌单共用一个滚动区，避免两个列表互相挤压 -->
+          <div class="atp-scroll">
           <!-- 歌单列表 -->
           <TransitionGroup v-if="playlists.length > 0" tag="div" name="atp-list" class="atp-list" appear>
             <div
@@ -261,8 +315,47 @@ function toBackendTrack(track: TrackInfo) {
             <span class="material-symbols-rounded">progress_activity</span>
           </div>
 
-          <div v-else-if="!isLoading" class="atp-empty">
+          <div v-else-if="!isLoading && neteasePlaylists.length === 0" class="atp-empty">
             <p>{{ t('library.playlist_empty_title') }}</p>
+          </div>
+
+          <!-- 网易云歌单：登录后可用，仅自建歌单可写 -->
+          <template v-if="neteasePlaylists.length > 0">
+            <div class="atp-section-label">{{ t('library.tab_netease_playlists') }}</div>
+            <div class="atp-list">
+              <div
+                v-for="pl in neteasePlaylists"
+                :key="'ne-' + pl.id"
+                class="atp-item"
+                :class="{ disabled: isSubmitting }"
+                @click="addToNeteasePlaylist(pl.id)"
+              >
+                <div class="atp-item-icon" :class="{ 'has-cover': coverFor(pl) }">
+                  <BilibiliCoverImage
+                    v-if="coverFor(pl) && isBilibiliCover(pl.cover_url)"
+                    :src="pl.cover_url!"
+                    class="atp-item-cover"
+                  >
+                    <span class="material-symbols-rounded filled" style="font-size: 20px">queue_music</span>
+                  </BilibiliCoverImage>
+                  <img
+                    v-else-if="coverFor(pl)"
+                    :src="pl.cover_url!"
+                    referrerpolicy="no-referrer"
+                    loading="lazy"
+                    class="atp-item-cover"
+                    alt=""
+                    @error="markCoverFailed(pl.id)"
+                  />
+                  <span v-else class="material-symbols-rounded filled" style="font-size: 20px">cloud</span>
+                </div>
+                <div class="atp-item-info">
+                  <div class="atp-item-name">{{ pl.name }}</div>
+                  <div class="atp-item-count">{{ t('library.track_count', { count: pl.track_count }) }}</div>
+                </div>
+              </div>
+            </div>
+          </template>
           </div>
         </div>
       </div>
@@ -388,16 +481,29 @@ function toBackendTrack(track: TrackInfo) {
   &:hover { opacity: 0.9; }
 }
 
-.atp-list {
-  display: flex;
-  flex-direction: column;
+/* 本地与云端歌单共用同一个滚动区 */
+.atp-scroll {
+  flex: 1;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
-  gap: 2px;
 
   &::-webkit-scrollbar { display: none; }
+}
+
+.atp-section-label {
+  margin: 12px 4px 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--md-on-surface-variant);
+}
+
+.atp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 .atp-item {

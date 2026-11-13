@@ -13,7 +13,7 @@ import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
 import ContextMenu from '@/components/ui/ContextMenu.vue'
 
 /// 评论（对齐 Android CommentSheet）：网易云歌曲评论与 B 站视频评论，YouTube / 本地没有评论入口
-const props = defineProps<{ open: boolean; track: TrackInfo | null }>()
+const props = defineProps<{ open: boolean; track: TrackInfo | null; albumId?: number | null }>()
 const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 const { t, locale } = useI18n()
 const auth = useAuthStore()
@@ -80,7 +80,11 @@ const PAGE_SIZE = 20
 /** 各平台单条评论长度上限（对齐 Android commentLengthLimit） */
 const LENGTH_LIMIT: Record<CommentTarget['platform'], number> = { netease: 140, bilibili: 1000 }
 
-const target = computed(() => resolveCommentTarget(props.track))
+// 专辑评论走 netease 平台的 "album:<id>" target，后端按 R_AL_0 前缀取数
+const target = computed<CommentTarget | null>(() => {
+  if (props.albumId) return { platform: 'netease', target: `album:${props.albumId}` }
+  return resolveCommentTarget(props.track)
+})
 const sorts = computed<CommentSort[]>(() => target.value?.platform === 'netease' ? ['hot', 'newest', 'recommended'] : ['hot', 'newest'])
 const sort = ref<CommentSort>('hot')
 /** 切换排序时新结果出来前保留旧列表（对齐 Android pendingSort），失败可继续浏览 */

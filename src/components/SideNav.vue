@@ -60,10 +60,12 @@ const activeSection = computed(() => (route.meta.section as string) ?? route.nam
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: center;
   background: var(--md-surface-container-low);
   border-right: 1px solid var(--md-surface-container-high);
   flex-shrink: 0;
-  padding: 12px 0;
+  /* 居中后整体上移约一个图标高度：底部多留 120px，居中时相当于上移 60px */
+  padding: 12px 0 132px;
 }
 
 .nav-list {

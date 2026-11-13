@@ -5,11 +5,14 @@ import { useRoute, useRouter } from 'vue-router'
 import { usePlayerStore, type TrackInfo } from '@/stores/player'
 import { useAuthStore } from '@/stores/auth'
 import { useDownloadStore } from '@/stores/download'
+import { useToastStore } from '@/stores/toast'
+import { createLogger } from '@/utils/logger'
 import { useDelayedFlag } from '@/composables/useDelayedFlag'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import AddToPlaylistDialog from '@/components/AddToPlaylistDialog.vue'
 import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
+import CommentsPanel from '@/components/CommentsPanel.vue'
 import ContextMenu from '@/components/ui/ContextMenu.vue'
 import TrackSelectionToolbar from '@/components/TrackSelectionToolbar.vue'
 import LocateTrackFab from '@/components/LocateTrackFab.vue'
@@ -38,6 +41,8 @@ const player = usePlayerStore()
 const { onTrackClick, onTrackDoubleClick } = useTrackActivation()
 const auth = useAuthStore()
 const downloadStore = useDownloadStore()
+const toast = useToastStore()
+const log = createLogger('netease-playlist')
 const { t, locale } = useI18n()
 
 const isLoading = ref(true)
@@ -50,9 +55,14 @@ const trackCount = ref(0)
 const playCount = ref(0)
 const description = ref('')
 const creator = ref('')
+/// 专辑艺人 id：只有专辑详情才有，用于「点歌手名跳转歌手页」
+const creatorId = ref<number | null>(null)
+const showComments = ref(false)
 const searchQuery = ref('')
 
 const tracks = ref<TrackInfo[]>([])
+/// 当前详情的缓存键，移除曲目后需要就地更新缓存，避免返回时又看到已删的歌
+const detailCacheKey = ref('')
 
 interface NeteaseDetailCache {
   playlistName: string
@@ -61,6 +71,8 @@ interface NeteaseDetailCache {
   playCount: number
   description: string
   creator: string
+  /// 专辑艺人 id（旧缓存没有该字段时为 undefined，不影响读取）
+  creatorId?: number | null
   tracks: TrackInfo[]
 }
 
@@ -71,6 +83,7 @@ function applyDetailCache(cache: NeteaseDetailCache) {
   playCount.value = cache.playCount
   description.value = cache.description
   creator.value = cache.creator
+  creatorId.value = cache.creatorId ?? null
   tracks.value = cache.tracks
 }
 
@@ -82,6 +95,7 @@ function saveDetailCache(cacheKey: string) {
     playCount: playCount.value,
     description: description.value,
     creator: creator.value,
+    creatorId: creatorId.value,
     tracks: tracks.value,
   })
 }
@@ -149,6 +163,7 @@ async function loadDetail() {
   )
   isLoading.value = true
   error.value = null
+  detailCacheKey.value = cacheKey
   const cached = previewCachedDetail<NeteaseDetailCache>(cacheKey, (detail) => {
     applyDetailCache(detail)
     isLoading.value = false
@@ -170,6 +185,7 @@ async function loadDetail() {
       coverUrl.value = albumCover
       description.value = album.description || ''
       creator.value = album.artist?.name || ''
+      creatorId.value = album.artist?.id ?? null
 
       const songs = data?.songs || []
       tracks.value = songs.map((s: any) => ({
@@ -181,6 +197,9 @@ async function loadDetail() {
         // 专辑曲目 al.picUrl 常为空，回退到专辑封面
         coverUrl: resolveNeteaseCover(s.al?.picUrl, s.al?.pic, albumCover) || albumCover,
         audioUrl: '',
+        artistId: s.ar?.[0]?.id ?? album.artist?.id ?? undefined,
+        albumId: s.al?.id ?? albumId.value ?? undefined,
+        artists: (s.ar || []).map((a: any) => ({ id: a.id, name: a.name })),
       }))
       trackCount.value = tracks.value.length
     } else {
@@ -193,6 +212,8 @@ async function loadDetail() {
       playCount.value = pl.playCount || 0
       description.value = pl.description || ''
       creator.value = pl.creator?.nickname || ''
+      // 歌单作者是用户不是歌手，没有歌手页可跳
+      creatorId.value = null
 
       const songs = pl.tracks || []
       tracks.value = songs.map((s: any) => ({
@@ -203,6 +224,9 @@ async function loadDetail() {
         durationMs: s.dt || 0,
         coverUrl: resolveNeteaseCover(s.al?.picUrl, s.al?.pic),
         audioUrl: '',
+        artistId: s.ar?.[0]?.id ?? undefined,
+        albumId: s.al?.id ?? undefined,
+        artists: (s.ar || []).map((a: any) => ({ id: a.id, name: a.name })),
       }))
     }
     saveDetailCache(cacheKey)
@@ -228,6 +252,49 @@ function recordOpen() {
 function playAll() {
   if (tracks.value.length === 0) return
   player.playAll(tracks.value)
+}
+
+/// 专辑评论用的资源 id（歌单没有评论入口，故仅在专辑页给出）
+const albumId = computed(() => (props.isAlbum ? Number(route.params.id) || null : null))
+
+/// 专辑艺人页跳转
+function openCreator() {
+  if (!creatorId.value) return
+  router.push({ name: 'netease-artist', params: { id: creatorId.value } })
+}
+
+/// 曲目行歌手名：单歌手直接跳转，多歌手弹出选择菜单（与播放页交互一致）
+function openTrackArtistMenu(event: MouseEvent, track: TrackInfo) {
+  const artists = (track.artists || []).filter(a => a.id)
+  if (artists.length === 0) {
+    if (track.artistId) router.push({ name: 'netease-artist', params: { id: track.artistId } })
+    return
+  }
+  if (artists.length === 1) {
+    router.push({ name: 'netease-artist', params: { id: artists[0].id } })
+    return
+  }
+  artistMenu.value = {
+    show: true,
+    x: event.clientX,
+    y: event.clientY,
+    items: artists.map(artist =>
+      createContextMenuItem(artist.name, { id: String(artist.id), icon: 'person' }),
+    ),
+  }
+}
+
+function handleArtistMenuClick(item: ContextMenuActionItem) {
+  artistMenu.value.show = false
+  const id = Number(item.id)
+  if (Number.isSafeInteger(id) && id > 0) {
+    router.push({ name: 'netease-artist', params: { id } })
+  }
+}
+
+/// 曲目行专辑名跳转
+function openAlbumPage(id: number) {
+  router.push({ name: 'netease-album', params: { id } })
 }
 
 function shufflePlay() {
@@ -263,6 +330,10 @@ function formatPlayCount(count: number): string {
 // 曲目右键菜单
 const trackMenu = ref<{ show: boolean; x: number; y: number; track: TrackInfo | null }>({
   show: false, x: 0, y: 0, track: null,
+})
+/// 多歌手选择菜单：点曲目行的歌手名时弹出（单歌手直接跳转）
+const artistMenu = ref<{ show: boolean; x: number; y: number; items: ContextMenuItem[] }>({
+  show: false, x: 0, y: 0, items: [],
 })
 const showAddToPlaylist = ref(false)
 const addToPlaylistTarget = ref<TrackInfo | null>(null)
@@ -377,6 +448,16 @@ const trackMenuItems = computed<ContextMenuItem[]>(() => {
         disabled: !track || isTrackDownloadDisabled(track),
       },
     ),
+    // 专辑页没有「从歌单移除」的概念，只在自己的歌单页提供
+    ...(props.isAlbum
+      ? []
+      : [
+          createContextMenuItem(t('library.remove_from_playlist'), {
+            id: 'remove-from-playlist',
+            icon: 'delete',
+            danger: true,
+          }),
+        ]),
   ]
 })
 
@@ -401,6 +482,30 @@ function handleTrackMenuClick(item: ContextMenuActionItem) {
     case 'download':
       void handleTrackDownload(track)
       break
+    case 'remove-from-playlist':
+      void removeTrackFromPlaylist(track)
+      break
+  }
+}
+
+/// 从当前网易云歌单移除单曲（仅自己的歌单可写，接口会校验归属）
+async function removeTrackFromPlaylist(track: TrackInfo) {
+  closeTrackMenu()
+  const playlistId = Number(route.params.id)
+  const match = /^netease:(\d+)$/.exec(track.id)
+  if (!playlistId || !match) return
+  try {
+    await invoke('remove_tracks_from_netease_playlist', {
+      playlistId,
+      songIds: [Number(match[1])],
+    })
+    tracks.value = tracks.value.filter(item => item.id !== track.id)
+    trackCount.value = Math.max(0, trackCount.value - 1)
+    if (detailCacheKey.value) saveDetailCache(detailCacheKey.value)
+    toast.success(t('library.removed_tracks', { count: 1 }))
+  } catch (e) {
+    log.error('Remove track from netease playlist failed:', e)
+    toast.error(t('library.remove_tracks_failed'))
   }
 }
 
@@ -453,7 +558,18 @@ onMounted(() => {
         </div>
         <div class="hero-info">
           <h1 class="hero-title">{{ playlistName }}</h1>
-          <p v-if="creator" class="hero-creator">{{ creator }}</p>
+          <p v-if="creator" class="hero-creator">
+            <span
+              v-if="creatorId"
+              class="creator-link"
+              role="link"
+              tabindex="0"
+              :title="t('player.view_artist', { name: creator })"
+              @click="openCreator"
+              @keydown.enter="openCreator"
+            >{{ creator }}</span>
+            <template v-else>{{ creator }}</template>
+          </p>
           <p class="hero-meta">
             {{ t('player.track_count', { count: trackCount }) }} · {{ totalDuration }}
             <span v-if="playCount"> · {{ formatPlayCount(playCount) }}</span>
@@ -469,6 +585,16 @@ onMounted(() => {
             </button>
             <button class="hero-icon-btn" :title="t('common.multi_select')" @click="enterSelectionMode()">
               <span class="material-symbols-rounded">checklist</span>
+            </button>
+            <!-- 专辑评论入口：图标与播放页评论按钮保持一致 -->
+            <button
+              v-if="isAlbum"
+              class="hero-icon-btn"
+              :title="t('player.comments')"
+              :aria-label="t('player.comments')"
+              @click="showComments = true"
+            >
+              <span class="material-symbols-rounded">chat_bubble</span>
             </button>
           </div>
         </div>
@@ -522,7 +648,21 @@ onMounted(() => {
           </div>
           <div class="track-info">
             <div class="track-title">{{ track.title }}</div>
-            <div class="track-meta">{{ track.artist }}<template v-if="track.album"> · {{ track.album }}</template></div>
+            <div class="track-meta">
+              <span
+                class="meta-link"
+                :class="{ 'meta-link--static': !track.artistId }"
+                @click.stop="openTrackArtistMenu($event, track)"
+              >{{ track.artist }}</span>
+              <template v-if="track.album">
+                <span class="meta-sep"> · </span>
+                <span
+                  class="meta-link"
+                  :class="{ 'meta-link--static': !track.albumId }"
+                  @click.stop="track.albumId && openAlbumPage(track.albumId)"
+                >{{ track.album }}</span>
+              </template>
+            </div>
           </div>
           <div class="track-duration">{{ formatDuration(track.durationMs) }}</div>
           <button v-if="!selectionMode" class="track-more" @click.stop="openTrackMenu($event, track)">
@@ -548,12 +688,53 @@ onMounted(() => {
       @click="handleTrackMenuClick"
     />
 
+    <ContextMenu
+      :open="artistMenu.show"
+      :x="artistMenu.x"
+      :y="artistMenu.y"
+      :items="artistMenu.items"
+      @update:open="artistMenu.show = $event"
+      @click="handleArtistMenuClick"
+    />
+
     <AddToPlaylistDialog v-model:open="showAddToPlaylist" :track="addToPlaylistTarget" :tracks="addToPlaylistTargets" />
+    <CommentsPanel v-model:open="showComments" :track="null" :album-id="albumId" />
   </div>
 </template>
 
 <style scoped lang="scss">
 @use '@/styles/detail-view.scss' as *;
+
+.creator-link {
+  cursor: pointer;
+  transition: color var(--duration-short);
+
+  &:hover,
+  &:focus-visible {
+    color: var(--md-primary);
+    text-decoration: underline;
+  }
+}
+
+/* 曲目行的歌手/专辑：有 id 才可点，否则保持纯文本外观 */
+.meta-link {
+  cursor: pointer;
+  transition: color var(--duration-short);
+
+  &:hover {
+    color: var(--md-primary);
+    text-decoration: underline;
+  }
+
+  &.meta-link--static {
+    cursor: inherit;
+    pointer-events: none;
+  }
+}
+
+.meta-sep {
+  white-space: pre;
+}
 
 .track-more {
   width: 32px;

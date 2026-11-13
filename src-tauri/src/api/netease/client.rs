@@ -5,7 +5,7 @@ use reqwest::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 
@@ -466,7 +466,31 @@ impl NeteaseClient {
             "offset": offset.to_string(),
             "total": "true"
         });
-        let body = self.weapi_post(&format!("{}/weapi/cloudsearch/get/web", BASE_URL), &params).await?;
+        // cloudsearch 对登录账号返回加密 result、匿名返回 50000005，改用 search/get
+        let mut body = self.weapi_post(&format!("{}/weapi/search/get", BASE_URL), &params).await?;
+
+        // 歌曲结果补封面
+        if search_type == 1 {
+            let ids: Vec<u64> = body["result"]["songs"]
+                .as_array()
+                .map(|arr| arr.iter().filter_map(|s| s["id"].as_u64()).collect())
+                .unwrap_or_default();
+            let covers = self.song_cover_map(&ids).await;
+            if !covers.is_empty() {
+                if let Some(arr) = body["result"]["songs"].as_array_mut() {
+                    for s in arr.iter_mut() {
+                        let Some(id) = s["id"].as_u64() else { continue };
+                        let Some(url) = covers.get(&id) else { continue };
+                        if s["al"].is_object() {
+                            s["al"]["picUrl"] = json!(url);
+                        } else if s["album"].is_object() {
+                            s["album"]["picUrl"] = json!(url);
+                        }
+                    }
+                }
+            }
+        }
+
         match json_i64(&body["code"]) {
             Some(200) | None => Ok(body),
             Some(code) => Err(AppError::Api(format!("netease search code {code}"))),
@@ -478,6 +502,31 @@ impl NeteaseClient {
     pub async fn get_song_comments(
         &self,
         song_id: u64,
+        page: u32,
+        page_size: u32,
+        sort_type: u32,
+        cursor: Option<&str>,
+    ) -> AppResult<Value> {
+        self.get_resource_comments(&format!("R_SO_4_{song_id}"), page, page_size, sort_type, cursor)
+            .await
+    }
+
+    /// 专辑评论：与歌曲评论同一接口，线程前缀为 R_AL_3（专辑），歌曲是 R_SO_4
+    pub async fn get_album_comments(
+        &self,
+        album_id: u64,
+        page: u32,
+        page_size: u32,
+        sort_type: u32,
+        cursor: Option<&str>,
+    ) -> AppResult<Value> {
+        self.get_resource_comments(&format!("R_AL_3_{album_id}"), page, page_size, sort_type, cursor)
+            .await
+    }
+
+    pub async fn get_resource_comments(
+        &self,
+        thread_id: &str,
         page: u32,
         page_size: u32,
         sort_type: u32,
@@ -498,7 +547,7 @@ impl NeteaseClient {
         self.api_post(
             &format!("{}/api/v2/resource/comments", BASE_URL),
             &[
-                ("threadId", format!("R_SO_4_{song_id}")),
+                ("threadId", thread_id.to_string()),
                 ("pageNo", page.to_string()),
                 ("pageSize", page_size.to_string()),
                 ("sortType", sort_type.to_string()),
@@ -510,15 +559,15 @@ impl NeteaseClient {
     }
 
     /// 楼层回复（对齐 Android getSongCommentReplies），time 为上一页游标，首页 -1
-    pub async fn get_song_comment_replies(
+    pub async fn get_resource_comment_replies(
         &self,
-        song_id: u64,
+        thread_id: &str,
         parent_comment_id: u64,
         limit: u32,
         cursor: Option<&str>,
     ) -> AppResult<Value> {
         let params = json!({
-            "threadId": format!("R_SO_4_{song_id}"),
+            "threadId": thread_id,
             "parentCommentId": parent_comment_id.to_string(),
             "limit": limit.clamp(1, 100).to_string(),
             "time": cursor.filter(|value| !value.is_empty()).unwrap_or("-1"),
@@ -532,15 +581,15 @@ impl NeteaseClient {
     }
 
     /// 发表评论 / 回复（对齐 Android sendSongComment）：没有幂等键，只发一次，结果不确定时交给用户核对
-    pub async fn send_song_comment(
+    pub async fn send_resource_comment(
         &self,
-        song_id: u64,
+        thread_id: &str,
         content: &str,
         reply_to: Option<u64>,
         check_token: &str,
     ) -> AppResult<Value> {
         let mut params = json!({
-            "threadId": format!("R_SO_4_{song_id}"),
+            "threadId": thread_id,
             "content": content,
             "checkToken": check_token,
             "csrf_token": self.csrf_token(),
@@ -580,33 +629,79 @@ impl NeteaseClient {
             "s": keyword,
             "type": "1",
             "limit": limit.to_string(),
-            "offset": offset.to_string(),
-            "total": "true"
+            "offset": offset.to_string()
         });
 
+        // cloudsearch/get/web 对已登录账号返回加密 result、匿名返回 50000005，
+        // 两条路径都拿不到 songs；search/get 两种状态都返回明文。
         let body = self.weapi_post(
-            &format!("{}/weapi/cloudsearch/get/web", BASE_URL),
+            &format!("{}/weapi/search/get", BASE_URL),
             &params,
         ).await?;
 
         let songs = body["result"]["songs"].as_array()
             .ok_or_else(|| AppError::Api("No search results".into()))?;
 
+        // search/get 不带封面，用批量详情接口补一次
+        let ids: Vec<u64> = songs.iter().filter_map(|s| s["id"].as_u64()).collect();
+        let covers = self.song_cover_map(&ids).await;
+
         let results = songs.iter().filter_map(|s| {
+            let artists = s["ar"].as_array().or_else(|| s["artists"].as_array())?;
+            let album = if s["al"].is_object() { &s["al"] } else { &s["album"] };
+            let id = s["id"].as_u64()?;
             Some(NeteaseSearchResult {
-                id: s["id"].as_u64()?,
+                id,
                 name: s["name"].as_str()?.to_string(),
-                artists: s["ar"].as_array()?
+                artists: artists
                     .iter()
                     .filter_map(|a| a["name"].as_str().map(String::from))
                     .collect(),
-                album: s["al"]["name"].as_str().unwrap_or("").to_string(),
-                duration_ms: s["dt"].as_u64().unwrap_or(0),
-                cover_url: s["al"]["picUrl"].as_str().map(String::from),
+                album: album["name"].as_str().unwrap_or("").to_string(),
+                duration_ms: s["dt"].as_u64().or_else(|| s["duration"].as_u64()).unwrap_or(0),
+                cover_url: album["picUrl"]
+                    .as_str()
+                    .map(String::from)
+                    .or_else(|| covers.get(&id).cloned()),
             })
         }).collect();
 
         Ok(results)
+    }
+
+    /// 批量取歌曲封面（weapi/v3/song/detail），失败时返回空表不影响搜索
+    async fn song_cover_map(&self, ids: &[u64]) -> HashMap<u64, String> {
+        if ids.is_empty() {
+            return HashMap::new();
+        }
+        let c: Vec<Value> = ids.iter().map(|id| json!({ "id": id })).collect();
+        let params = json!({ "c": serde_json::to_string(&c).unwrap_or_default() });
+        let body = match self
+            .weapi_post(&format!("{}/weapi/v3/song/detail", BASE_URL), &params)
+            .await
+        {
+            Ok(body) => body,
+            Err(error) => {
+                log::debug!(target: "netease", "song cover lookup failed: {error}");
+                return HashMap::new();
+            }
+        };
+        body["songs"]
+            .as_array()
+            .map(|songs| {
+                songs
+                    .iter()
+                    .filter_map(|s| {
+                        let id = s["id"].as_u64()?;
+                        let url = s["al"]["picUrl"].as_str()?;
+                        if url.is_empty() {
+                            return None;
+                        }
+                        Some((id, url.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 与 Android 使用同一 EAPI 取流入口
@@ -826,6 +921,25 @@ impl NeteaseClient {
         ).await
     }
 
+    /// 向网易云歌单添加/移除歌曲（op=add / del），需要登录态与 csrf_token
+    pub async fn manipulate_playlist_tracks(
+        &self,
+        playlist_id: u64,
+        song_ids: &[u64],
+        add: bool,
+    ) -> AppResult<Value> {
+        self.weapi_post_write(
+            &format!("{}/weapi/playlist/manipulate/tracks", BASE_URL),
+            &json!({
+                "op": if add { "add" } else { "del" },
+                "pid": playlist_id.to_string(),
+                "trackIds": serde_json::to_string(song_ids).unwrap_or_default(),
+                "imme": "true",
+                "csrf_token": self.csrf_token(),
+            }),
+        ).await
+    }
+
     /// 下载和在线播放使用同一个 EAPI 入口
     pub async fn get_song_download_url(&self, song_id: u64, quality: &str) -> AppResult<NeteaseSongUrl> {
         self.get_song_url(song_id, quality).await
@@ -896,6 +1010,20 @@ impl NeteaseClient {
             })
             .await?;
         parse_json_response(resp, "netease artist songs").await
+    }
+
+    /// 歌手热门歌曲：顺序与官方「热门歌曲」一致，pop 为真实热度。
+    /// artist/songs 的 order=hot 已失效（pop 恒为 5、实际按专辑顺序返回），故单独取这个接口。
+    pub async fn get_artist_top_songs(&self, artist_id: u64) -> AppResult<Value> {
+        let resp = self
+            .send_with_fallback(|client| {
+                client
+                    .get(format!("{}/api/v1/artist/top/song?id={artist_id}", BASE_URL))
+                    .header("User-Agent", USER_AGENT)
+                    .header("Referer", "https://music.163.com")
+            })
+            .await?;
+        parse_json_response(resp, "netease artist top songs").await
     }
 
     /// 获取专辑详情

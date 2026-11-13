@@ -3,7 +3,7 @@ import { createLogger } from '@/utils/logger'
 import { createPinia } from 'pinia'
 import { createRouter, createWebHistory } from 'vue-router'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { isTauri } from '@tauri-apps/api/core'
+import { isTauri, invoke } from '@tauri-apps/api/core'
 import i18n from './i18n'
 import { initTheme } from './utils/theme'
 import { installHostBackgroundSync } from './utils/hostBackground'
@@ -92,8 +92,14 @@ async function mountWindow() {
   installClipboardPasteGuard()
   installHostBackgroundSync()
 
-  // Vue 挂载完成后显示窗口，避免闪烁
-  if (isTauri()) void getCurrentWindow().show().catch(() => {})
+  // Vue 挂载完成后显示窗口，避免闪烁；显示后再补一次窗口状态恢复
+  // （隐藏状态下 Windows 不允许最大化，插件那一次恢复会丢掉 maximized）
+  if (isTauri()) {
+    void getCurrentWindow()
+      .show()
+      .then(() => invoke('apply_window_state'))
+      .catch(() => {})
+  }
 }
 
 void mountWindow()

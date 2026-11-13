@@ -778,6 +778,7 @@
     "load_failed": "加载失败",
     "too_many_failures": "连续播放失败过多，已停止",
     "like_cloud_sync_failed": "已在本地收藏，但云端同步失败",
+    "like_cloud_copyright_limited": "已在本地收藏；该歌曲受版权限制，暂不支持云端同步",
     "retry": "重试",
     "empty_playlist": "歌单为空",
     "queue": "播放队列",

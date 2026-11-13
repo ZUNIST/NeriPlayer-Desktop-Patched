@@ -256,48 +256,35 @@ onUnmounted(() => { generation++ })
     </div>
 
     <template v-else>
-      <!-- Hero 卡片 (对齐 Android ArtistHeaderCard: 封面大图 + 底部渐变 + 圆头像/名称/别名) -->
+      <!-- 歌手头部：无背景图，圆形头像 + 右侧信息并排（对齐网易云） -->
       <div class="artist-hero-card">
-        <div class="artist-hero-media">
+        <div class="artist-avatar">
           <BilibiliCoverImage
-            v-if="header?.coverUrl || header?.avatarUrl"
-            :src="header.coverUrl || header.avatarUrl"
-            class="artist-hero-img"
+            v-if="header?.avatarUrl || header?.coverUrl"
+            :src="header.avatarUrl || header.coverUrl"
           />
-          <div v-else class="artist-hero-img artist-hero-img--empty">
-            <span class="material-symbols-rounded" style="font-size: 56px; opacity: 0.3">account_circle</span>
-          </div>
-          <div class="artist-hero-scrim" />
-          <div class="artist-hero-identity">
-            <div class="artist-avatar">
-              <BilibiliCoverImage
-                v-if="header?.avatarUrl || header?.coverUrl"
-                :src="header.avatarUrl || header.coverUrl"
-              />
-              <span v-else class="material-symbols-rounded">account_circle</span>
-            </div>
-            <div class="artist-identity-text">
-              <h1>{{ header?.name || String(route.query.name || '') }}</h1>
-              <p v-if="header?.alias">{{ header.alias }}</p>
-            </div>
-          </div>
+          <span v-else class="material-symbols-rounded">account_circle</span>
         </div>
-        <div class="artist-hero-body">
-          <div class="artist-stat-chips">
-            <span class="artist-stat-chip">{{ songCountLabel }}</span>
-            <span class="artist-stat-chip">{{ albumCountLabel }}</span>
+        <div class="artist-hero-info">
+          <div class="artist-hero-titleline">
+            <h1 class="artist-name">{{ header?.name || String(route.query.name || '') }}</h1>
+            <div class="artist-stat-chips">
+              <span class="artist-stat-chip">{{ songCountLabel }}</span>
+              <span class="artist-stat-chip">{{ albumCountLabel }}</span>
+            </div>
+            <div class="artist-hero-actions">
+              <button class="play-all-btn" :disabled="!tracks.length" @click="playAll">
+                <span class="material-symbols-rounded filled">play_arrow</span>
+                {{ t('player.play_all') }}
+              </button>
+              <button class="artist-follow-btn" :class="{ active: following }" :disabled="changing || !header?.name" @click="toggleFollow">
+                <span class="material-symbols-rounded">{{ following ? 'check' : 'person_add' }}</span>
+                {{ t(following ? 'player.artist_unsubscribe' : 'player.artist_subscribe') }}
+              </button>
+            </div>
           </div>
+          <p v-if="header?.alias" class="artist-alias">{{ header.alias }}</p>
           <p v-if="header?.briefDesc" class="artist-brief">{{ header.briefDesc }}</p>
-          <div class="artist-hero-actions">
-            <button class="play-all-btn" :disabled="!tracks.length" @click="playAll">
-              <span class="material-symbols-rounded filled">play_arrow</span>
-              {{ t('player.play_all') }}
-            </button>
-            <button class="artist-follow-btn" :class="{ active: following }" :disabled="changing || !header?.name" @click="toggleFollow">
-              <span class="material-symbols-rounded">{{ following ? 'check' : 'person_add' }}</span>
-              {{ t(following ? 'player.artist_unsubscribe' : 'player.artist_subscribe') }}
-            </button>
-          </div>
         </div>
       </div>
 
@@ -361,15 +348,15 @@ onUnmounted(() => { generation++ })
         </div>
       </div>
 
-      <!-- 专辑列表 -->
-      <div v-else key="artist-albums" class="artist-album-list">
+      <!-- 专辑列表：网格卡片，对齐网易云专辑墙 -->
+      <div v-else key="artist-albums" class="artist-album-grid">
         <div v-if="filteredAlbums.length === 0" class="state-center">
           <p>{{ t(search ? 'player.no_results' : 'player.artist_albums_empty') }}</p>
         </div>
         <div
           v-for="album in filteredAlbums"
           :key="album.id"
-          class="artist-album-item"
+          class="artist-album-card"
           role="button"
           tabindex="0"
           @click="openAlbum(album)"
@@ -382,14 +369,11 @@ onUnmounted(() => { generation++ })
             </BilibiliCoverImage>
             <span v-else class="material-symbols-rounded filled">album</span>
           </div>
-          <div class="artist-album-info">
-            <div class="artist-album-name">{{ album.name }}</div>
-            <div class="artist-album-meta">
-              {{ [album.publishYear, album.size ? t('player.track_count', { count: album.size }) : '']
-                .filter(Boolean).join(' · ') }}
-            </div>
+          <div class="artist-album-name" :title="album.name">{{ album.name }}</div>
+          <div class="artist-album-meta">
+            {{ [album.publishYear, album.size ? t('player.track_count', { count: album.size }) : '']
+              .filter(Boolean).join(' · ') }}
           </div>
-          <span class="material-symbols-rounded" style="font-size: 18px; opacity: 0.3">chevron_right</span>
         </div>
       </div>
       </Transition>
@@ -421,58 +405,18 @@ onUnmounted(() => { generation++ })
   .search-input { min-width: 0; }
 }
 
-// Hero 卡片
+// 歌手头部：无背景图，头像与信息左右并排（对齐网易云）
 .artist-hero-card {
-  border-radius: 28px;
-  overflow: hidden;
-  background: var(--md-surface-container);
-  margin-bottom: 16px;
-}
-
-.artist-hero-media {
-  position: relative;
-  height: 240px;
-}
-
-.artist-hero-img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-
-  :deep(img) {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-  }
-
-  &--empty {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--md-surface-variant);
-  }
-}
-
-.artist-hero-scrim {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(to bottom, transparent 40%, rgba(0, 0, 0, 0.55));
-}
-
-.artist-hero-identity {
-  position: absolute;
-  left: 20px;
-  right: 20px;
-  bottom: 16px;
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 20px;
+  padding: 4px 2px 18px;
+  margin-bottom: 4px;
 }
 
 .artist-avatar {
-  width: 64px;
-  height: 64px;
+  width: 120px;
+  height: 120px;
   border-radius: 50%;
   overflow: hidden;
   flex-shrink: 0;
@@ -480,7 +424,6 @@ onUnmounted(() => { generation++ })
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
 
   :deep(img) {
     width: 100%;
@@ -488,73 +431,90 @@ onUnmounted(() => { generation++ })
     object-fit: cover;
   }
 
-  .material-symbols-rounded { font-size: 40px; opacity: 0.5; }
+  .material-symbols-rounded { font-size: 64px; opacity: 0.35; }
 }
 
-.artist-identity-text {
+.artist-hero-info {
+  flex: 1;
   min-width: 0;
-
-  h1 {
-    margin: 0;
-    font-size: 24px;
-    font-weight: 700;
-    color: #fff;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    text-shadow: 0 1px 8px rgba(0, 0, 0, 0.4);
-  }
-
-  p {
-    margin: 2px 0 0;
-    font-size: 13px;
-    color: rgba(255, 255, 255, 0.82);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
 }
 
-.artist-hero-body {
-  padding: 16px 20px 20px;
+/* 名字/统计/按钮同处第一行，按钮靠右；空间不足时自动换行而不是挤压名字 */
+.artist-hero-titleline {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
+.artist-name {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--md-on-surface);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artist-alias {
+  margin: 5px 0 0;
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .artist-stat-chips {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .artist-stat-chip {
   display: inline-flex;
   align-items: center;
-  height: 30px;
-  padding: 0 14px;
+  height: 22px;
+  padding: 0 10px;
   border-radius: var(--radius-full);
   border: 1px solid var(--md-outline-variant);
   color: var(--md-on-surface-variant);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
 }
 
 .artist-brief {
-  margin: 12px 0 0;
-  font-size: 13px;
-  line-height: 1.6;
+  margin: 8px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--md-on-surface-variant);
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
 .artist-hero-actions {
-  margin-top: 14px;
+  margin-left: auto;
   display: flex;
-  gap: 10px;
+  gap: 8px;
+  flex-shrink: 0;
+  align-self: center;
 
-  .play-all-btn { margin-top: 0; }
+  /* 局部收窄按钮，避免把第一行撑高（不影响其他页面的 play-all-btn） */
+  .play-all-btn {
+    margin-top: 0;
+    padding: 8px 18px;
+    font-size: 13px;
+  }
   .play-all-btn:disabled { opacity: 0.4; pointer-events: none; }
+
+  .artist-follow-btn {
+    padding: 8px 16px;
+    font-size: 13px;
+  }
 }
 
 .artist-follow-btn {
@@ -572,35 +532,51 @@ onUnmounted(() => { generation++ })
   .material-symbols-rounded { font-size: 18px; }
 }
 
-// 专辑行
-.artist-album-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+// 专辑网格：卡片式，对齐网易云专辑墙
+.artist-album-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 26px 18px;
+  padding: 4px 2px 10px;
+  align-content: start;
 }
 
-.artist-album-item {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 12px;
-  border-radius: 16px;
-  cursor: pointer;
-  transition: background var(--duration-short, 150ms);
+/* 空态/错误态占满整行，不占一个格子 */
+.artist-album-grid .state-center {
+  grid-column: 1 / -1;
+}
 
-  &:hover { background: var(--md-surface-container); }
+.artist-album-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+  transition: transform var(--duration-short, 150ms);
+
+  &:hover .artist-album-cover {
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.18);
+  }
+
+  &:hover .artist-album-name {
+    color: var(--md-primary);
+  }
+
+  &:active {
+    transform: scale(0.98);
+  }
 }
 
 .artist-album-cover {
-  width: 56px;
-  height: 56px;
-  border-radius: 12px;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
   overflow: hidden;
-  flex-shrink: 0;
   background: var(--md-surface-variant);
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: box-shadow var(--duration-short, 150ms);
 
   :deep(img) {
     width: 100%;
@@ -608,25 +584,24 @@ onUnmounted(() => { generation++ })
     object-fit: cover;
   }
 
-  .material-symbols-rounded { font-size: 26px; opacity: 0.4; }
-}
-
-.artist-album-info {
-  flex: 1;
-  min-width: 0;
+  .material-symbols-rounded { font-size: 32px; opacity: 0.35; }
 }
 
 .artist-album-name {
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--md-on-surface);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  transition: color var(--duration-short, 150ms);
 }
 
 .artist-album-meta {
-  margin-top: 2px;
   font-size: 12px;
   color: var(--md-on-surface-variant);
+  margin-top: -4px;
 }
 </style>

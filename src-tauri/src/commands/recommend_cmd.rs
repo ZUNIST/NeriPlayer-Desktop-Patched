@@ -182,7 +182,74 @@ pub async fn like_song(
     state: State<'_, AppState>,
 ) -> AppResult<Value> {
     let client = state.netease();
-    client.like_song(song_id, like).await
+    let body = client.like_song(song_id, like).await?;
+    // 业务失败要抛出去，否则前端只能显示笼统的「同步失败」，无从定位
+    let code = body["code"].as_i64().unwrap_or(-1);
+    if code != 200 {
+        let message = body["message"].as_str().unwrap_or("netease like failed");
+        return Err(AppError::Api(format!("{message} ({code})")));
+    }
+    Ok(body)
+}
+
+/// 向网易云歌单添加歌曲（需登录；走 playlist/manipulate/tracks）
+#[tauri::command]
+pub async fn add_tracks_to_netease_playlist(
+    playlist_id: u64,
+    song_ids: Vec<u64>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    if song_ids.is_empty() {
+        return Ok(serde_json::json!({ "code": 200, "count": 0 }));
+    }
+    {
+        let auth = state.auth.lock();
+        if auth.netease.is_none() {
+            return Err(AppError::Api("Netease not logged in".into()));
+        }
+    }
+    let body = state
+        .netease()
+        .manipulate_playlist_tracks(playlist_id, &song_ids, true)
+        .await?;
+    let code = body["code"].as_i64().unwrap_or(-1);
+    if code != 200 {
+        let message = body["message"]
+            .as_str()
+            .unwrap_or("netease playlist add failed");
+        return Err(AppError::Api(format!("{message} ({code})")));
+    }
+    Ok(body)
+}
+
+/// 从网易云歌单移除歌曲（需登录；走 playlist/manipulate/tracks，op=del）
+#[tauri::command]
+pub async fn remove_tracks_from_netease_playlist(
+    playlist_id: u64,
+    song_ids: Vec<u64>,
+    state: State<'_, AppState>,
+) -> AppResult<Value> {
+    if song_ids.is_empty() {
+        return Ok(serde_json::json!({ "code": 200, "count": 0 }));
+    }
+    {
+        let auth = state.auth.lock();
+        if auth.netease.is_none() {
+            return Err(AppError::Api("Netease not logged in".into()));
+        }
+    }
+    let body = state
+        .netease()
+        .manipulate_playlist_tracks(playlist_id, &song_ids, false)
+        .await?;
+    let code = body["code"].as_i64().unwrap_or(-1);
+    if code != 200 {
+        let message = body["message"]
+            .as_str()
+            .unwrap_or("netease playlist remove failed");
+        return Err(AppError::Api(format!("{message} ({code})")));
+    }
+    Ok(body)
 }
 
 /// 获取用户喜欢的歌曲 ID 列表（网易云）
@@ -353,22 +420,48 @@ pub async fn get_netease_artist_songs(
 ) -> AppResult<Value> {
     let client = state.netease();
     let page_size: u32 = 100;
+    let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
     let mut all_songs: Vec<Value> = Vec::new();
-    let mut offset: u32 = 0;
 
+    // 先把官方「热门歌曲」按真实热度排好放前面：
+    // artist/songs 的 order=hot 已失效（pop 恒为 5、实际按专辑顺序），
+    // 真实热度顺序只在 artist/top/song（pop=100）里。
+    match client.get_artist_top_songs(artist_id).await {
+        Ok(body) => {
+            for song in body["songs"].as_array().cloned().unwrap_or_default() {
+                if let Some(id) = song["id"].as_u64() {
+                    if seen.insert(id) {
+                        all_songs.push(song);
+                    }
+                }
+            }
+        }
+        Err(e) => log::warn!(target: "recommend", "get_artist_top_songs failed: {}", e),
+    }
+
+    let mut offset: u32 = 0;
     for page_index in 0..NETEASE_ARTIST_MAX_PAGES {
         let page = match client.get_artist_songs(artist_id, "hot", offset, page_size).await {
             Ok(page) => page,
-            Err(e) if page_index == 0 => return Err(e),
             Err(e) => {
-                // 后续页失败时保留已取到的部分, 不让整页报错
+                // 首页失败且热门也没拿到才算彻底失败；否则保留已有结果
+                if page_index == 0 && all_songs.is_empty() {
+                    return Err(e);
+                }
                 log::warn!(target: "recommend", "get_artist_songs page failed: {}", e);
                 break;
             }
         };
         let songs = page["songs"].as_array().cloned().unwrap_or_default();
         let count = songs.len();
-        all_songs.extend(songs);
+        // 热门已覆盖的曲目跳过，避免重复
+        for song in songs {
+            if let Some(id) = song["id"].as_u64() {
+                if seen.insert(id) {
+                    all_songs.push(song);
+                }
+            }
+        }
         let more = page["more"].as_bool().unwrap_or(false);
         if !more || count == 0 {
             break;

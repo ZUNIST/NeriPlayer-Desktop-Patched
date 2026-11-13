@@ -778,6 +778,7 @@
     "load_failed": "Failed to load",
     "too_many_failures": "Too many playback failures, stopped",
     "like_cloud_sync_failed": "Liked locally, but cloud sync failed",
+    "like_cloud_copyright_limited": "Liked locally; this track is copyright-restricted and cannot be synced",
     "retry": "Retry",
     "empty_playlist": "Empty playlist",
     "queue": "Queue",

@@ -6,6 +6,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { normalizeTrack, usePlayerStore, type TrackInfo } from '@/stores/player'
 import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
 import ContextMenu from '@/components/ui/ContextMenu.vue'
+import { neteaseSongArtists } from '@/modules/library/artistNavigation'
 import LocateTrackFab from '@/components/LocateTrackFab.vue'
 import { useLocateCurrentTrack } from '@/composables/useLocateCurrentTrack'
 import { useIncrementalList } from '@/composables/useIncrementalList'
@@ -103,6 +104,70 @@ function closeTrackMenu() {
 
 const { downloadMenuItem, downloadFromMenu } = useTrackDownloadMenu(() => trackMenu.value.track, closeTrackMenu)
 
+
+function neteaseSongIdOf(track: TrackInfo): number | null {
+  const match = /^netease:(\d+)$/.exec(track.id)
+  return match ? Number(match[1]) : null
+}
+
+function isNeteaseTrack(track: TrackInfo): boolean {
+  return neteaseSongIdOf(track) !== null
+}
+
+/// 曲目行歌手名：单歌手直接跳转，多歌手弹菜单。
+/// 这里的曲目来自数据库，没有预存歌手 id，点开时查一次歌曲详情。
+async function openTrackArtistMenu(event: MouseEvent, track: TrackInfo) {
+  const songId = neteaseSongIdOf(track)
+  if (!songId) return
+  try {
+    const detail = await invoke('get_netease_song_detail', { songId })
+    const artists = neteaseSongArtists(detail, songId)
+    if (artists.length === 0) return
+    if (artists.length === 1) {
+      router.push({ name: 'netease-artist', params: { id: artists[0].id } })
+      return
+    }
+    artistMenu.value = {
+      show: true,
+      x: event.clientX,
+      y: event.clientY,
+      items: artists.map(artist =>
+        createContextMenuItem(artist.name, { id: String(artist.id), icon: 'person' }),
+      ),
+    }
+  } catch (e) {
+    log.error('open track artist failed:', e)
+  }
+}
+
+function handleArtistMenuClick(item: ContextMenuActionItem) {
+  artistMenu.value.show = false
+  const id = Number(item.id)
+  if (Number.isSafeInteger(id) && id > 0) {
+    router.push({ name: 'netease-artist', params: { id } })
+  }
+}
+
+/// 曲目行专辑名：点击时取一次详情拿专辑 id
+async function openTrackAlbum(track: TrackInfo) {
+  const songId = neteaseSongIdOf(track)
+  if (!songId) return
+  try {
+    const detail = await invoke<any>('get_netease_song_detail', { songId })
+    const song = (detail?.songs || []).find((item: any) => Number(item?.id) === songId)
+    const albumId = Number(song?.al?.id)
+    if (Number.isSafeInteger(albumId) && albumId > 0) {
+      router.push({ name: 'netease-album', params: { id: albumId } })
+    }
+  } catch (e) {
+    log.error('open track album failed:', e)
+  }
+}
+
+/// 多歌手选择菜单（点曲目行的歌手名时弹出）
+const artistMenu = ref<{ show: boolean; x: number; y: number; items: ContextMenuItem[] }>({
+  show: false, x: 0, y: 0, items: [],
+})
 const trackMenuItems = computed<ContextMenuItem[]>(() => [
   createContextMenuItem(t('player.play_next'), { id: 'play-next', icon: 'queue_play_next' }),
   createContextMenuItem(t('player.add_to_queue'), { id: 'add-to-queue', icon: 'add_to_queue' }),
@@ -218,7 +283,21 @@ onMounted(load)
           </div>
           <div class="track-info">
             <div class="track-title">{{ track.title }}</div>
-            <div class="track-meta">{{ track.artist }}</div>
+            <div class="track-meta">
+              <span
+                class="meta-link"
+                :class="{ 'meta-link--static': !isNeteaseTrack(track) }"
+                @click.stop="openTrackArtistMenu($event, track)"
+              >{{ track.artist }}</span>
+              <template v-if="track.album">
+                <span class="meta-sep"> · </span>
+                <span
+                  class="meta-link"
+                  :class="{ 'meta-link--static': !isNeteaseTrack(track) }"
+                  @click.stop="openTrackAlbum(track)"
+                >{{ track.album }}</span>
+              </template>
+            </div>
           </div>
           <div class="track-duration">{{ formatDuration(track.durationMs) }}</div>
         </div>
@@ -239,6 +318,16 @@ onMounted(load)
       @update:open="(value: boolean) => { if (!value) closeTrackMenu() }"
       @click="handleTrackMenuClick"
     />
+
+    <ContextMenu
+      :open="artistMenu.show"
+      :x="artistMenu.x"
+      :y="artistMenu.y"
+      :items="artistMenu.items"
+      @update:open="artistMenu.show = $event"
+      @click="handleArtistMenuClick"
+    />
+
   </div>
 </template>
 
@@ -318,5 +407,25 @@ onMounted(load)
 
 @keyframes fav-spin {
   to { transform: rotate(360deg); }
+}
+
+/* 曲目行的歌手/专辑：有歌曲 id 才可点 */
+.meta-link {
+  cursor: pointer;
+  transition: color var(--duration-short);
+
+  &:hover {
+    color: var(--md-primary);
+    text-decoration: underline;
+  }
+
+  &.meta-link--static {
+    cursor: inherit;
+    pointer-events: none;
+  }
+}
+
+.meta-sep {
+  white-space: pre;
 }
 </style>

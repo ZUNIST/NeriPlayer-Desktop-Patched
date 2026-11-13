@@ -31,6 +31,7 @@ import {
 import { localPlaylistDisplayName } from '@/modules/library/localPlaylists'
 import { recordPlaylistOpen } from '@/modules/library/playlistUsage'
 import { createLogger } from '@/utils/logger'
+import { neteaseSongArtists } from '@/modules/library/artistNavigation'
 import { formatTrackDuration as formatDuration } from '@/utils/timeFormat'
 
 const log = createLogger('local-playlist-view')
@@ -305,6 +306,10 @@ async function loadDetail(options: { silent?: boolean } = {}) {
 const trackMenu = ref<{ show: boolean; x: number; y: number; track: TrackInfo | null; index: number }>({
   show: false, x: 0, y: 0, track: null, index: -1,
 })
+/// 多歌手选择菜单（点曲目行的歌手名时弹出）
+const artistMenu = ref<{ show: boolean; x: number; y: number; items: ContextMenuItem[] }>({
+  show: false, x: 0, y: 0, items: [],
+})
 const showAddToPlaylist = ref(false)
 const addToPlaylistTarget = ref<TrackInfo | null>(null)
 const addToPlaylistTargets = ref<TrackInfo[]>([])
@@ -319,6 +324,65 @@ function openTrackMenu(e: MouseEvent, track: TrackInfo, index: number) {
   let x = rect.left - 204
   if (x < 8) x = rect.right + 4
   trackMenu.value = { show: true, x, y: rect.top, track, index }
+}
+
+function neteaseSongIdOf(track: TrackInfo): number | null {
+  const match = /^netease:(\d+)$/.exec(track.id)
+  return match ? Number(match[1]) : null
+}
+
+function isNeteaseTrack(track: TrackInfo): boolean {
+  return neteaseSongIdOf(track) !== null
+}
+
+/// 曲目行歌手名：单歌手直接跳转，多歌手弹菜单。
+/// 本地歌单没预存歌手 id（曲目来自数据库），点开时查一次歌曲详情。
+async function openTrackArtistMenu(event: MouseEvent, track: TrackInfo) {
+  const songId = neteaseSongIdOf(track)
+  if (!songId) return
+  try {
+    const detail = await invoke('get_netease_song_detail', { songId })
+    const artists = neteaseSongArtists(detail, songId)
+    if (artists.length === 0) return
+    if (artists.length === 1) {
+      router.push({ name: 'netease-artist', params: { id: artists[0].id } })
+      return
+    }
+    artistMenu.value = {
+      show: true,
+      x: event.clientX,
+      y: event.clientY,
+      items: artists.map(artist =>
+        createContextMenuItem(artist.name, { id: String(artist.id), icon: 'person' }),
+      ),
+    }
+  } catch (e) {
+    log.error('open track artist failed:', e)
+  }
+}
+
+function handleArtistMenuClick(item: ContextMenuActionItem) {
+  artistMenu.value.show = false
+  const id = Number(item.id)
+  if (Number.isSafeInteger(id) && id > 0) {
+    router.push({ name: 'netease-artist', params: { id } })
+  }
+}
+
+/// 曲目行专辑名：点击时取一次详情拿专辑 id
+async function openTrackAlbum(track: TrackInfo) {
+  const songId = neteaseSongIdOf(track)
+  if (!songId) return
+  try {
+    const detail = await invoke<any>('get_netease_song_detail', { songId })
+    const song = (detail?.songs || []).find((item: any) => Number(item?.id) === songId)
+    const albumId = Number(song?.al?.id)
+    if (Number.isSafeInteger(albumId) && albumId > 0) {
+      router.push({ name: 'netease-album', params: { id: albumId } })
+    }
+  } catch (e) {
+    log.error('open track album failed:', e)
+  }
 }
 
 function openTrackContextMenu(e: MouseEvent, track: TrackInfo, index: number) {
@@ -985,7 +1049,21 @@ onUnmounted(() => {
           </div>
           <div class="track-info">
             <div class="track-title">{{ track.title }}</div>
-            <div class="track-meta">{{ track.artist }}<template v-if="displayAlbum(track.album)"> · {{ displayAlbum(track.album) }}</template></div>
+            <div class="track-meta">
+              <span
+                class="meta-link"
+                :class="{ 'meta-link--static': !isNeteaseTrack(track) }"
+                @click.stop="openTrackArtistMenu($event, track)"
+              >{{ track.artist }}</span>
+              <template v-if="displayAlbum(track.album)">
+                <span class="meta-sep"> · </span>
+                <span
+                  class="meta-link"
+                  :class="{ 'meta-link--static': !isNeteaseTrack(track) }"
+                  @click.stop="openTrackAlbum(track)"
+                >{{ displayAlbum(track.album) }}</span>
+              </template>
+            </div>
           </div>
           <span
             v-if="downloadStore.isDownloaded(track.id)"
@@ -1025,6 +1103,16 @@ onUnmounted(() => {
       @update:open="trackMenu.show = $event"
       @click="handleTrackMenuClick"
     />
+
+    <ContextMenu
+      :open="artistMenu.show"
+      :x="artistMenu.x"
+      :y="artistMenu.y"
+      :items="artistMenu.items"
+      @update:open="artistMenu.show = $event"
+      @click="handleArtistMenuClick"
+    />
+
 
     <!-- 删除确认对话框 -->
     <M3Dialog
@@ -1289,5 +1377,25 @@ onUnmounted(() => {
   font-size: 14px;
   color: var(--md-on-surface-variant);
   line-height: 1.5;
+}
+
+/* 曲目行的歌手/专辑：有歌曲 id 才可点 */
+.meta-link {
+  cursor: pointer;
+  transition: color var(--duration-short);
+
+  &:hover {
+    color: var(--md-primary);
+    text-decoration: underline;
+  }
+
+  &.meta-link--static {
+    cursor: inherit;
+    pointer-events: none;
+  }
+}
+
+.meta-sep {
+  white-space: pre;
 }
 </style>

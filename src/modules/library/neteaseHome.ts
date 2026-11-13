@@ -2,9 +2,9 @@ import type { TrackInfo } from '@/stores/player'
 import { COVER_SIZE_LIST, withCoverSize } from '@/utils/trackCover'
 
 export const NETEASE_HOME_SECTIONS = [
+  { key: 'daily_recommend', titleKey: 'home.daily_recommend', kind: 'songs', requiresLogin: true, icon: 'today' },
   { key: 'personal_radar', titleKey: 'home.radar', kind: 'songs', requiresLogin: false, icon: 'radar' },
   { key: 'radar_playlists', titleKey: 'home.radar_playlists', kind: 'radar', requiresLogin: false, icon: 'explore' },
-  { key: 'daily_recommend', titleKey: 'home.daily_recommend', kind: 'songs', requiresLogin: true, icon: 'today' },
   { key: 'private_fm', titleKey: 'home.private_fm', kind: 'songs', requiresLogin: true, icon: 'radio' },
   { key: 'top_soaring', titleKey: 'home.trending', kind: 'songs', requiresLogin: false, icon: 'bolt' },
   { key: 'personalized_new_songs', titleKey: 'home.new_songs', kind: 'songs', requiresLogin: false, icon: 'new_releases' },

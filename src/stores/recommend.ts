@@ -448,21 +448,18 @@ export const useRecommendStore = defineStore('recommend', () => {
 
   /** 喜欢/取消喜欢歌曲 */
   async function toggleLikeSong(songId: number, like: boolean): Promise<boolean> {
-    try {
-      const data = await invoke<any>('like_song', { songId, like })
-      if (data?.code === 200) {
-        if (like) {
-          likedSongIds.value.add(songId)
-        } else {
-          likedSongIds.value.delete(songId)
-        }
-        return true
+    const data = await invoke<any>('like_song', { songId, like })
+    if (data?.code === 200) {
+      if (like) {
+        likedSongIds.value.add(songId)
+      } else {
+        likedSongIds.value.delete(songId)
       }
-      return false
-    } catch (e) {
-      log.error('toggleLikeSong:', e)
-      return false
+      return true
     }
+    // 不再吞异常：把业务码交给调用方，避免上层只剩一句笼统的「同步失败」
+    log.error('toggleLikeSong failed:', data)
+    throw new Error(`code=${data?.code ?? 'unknown'}`)
   }
 
   /** 获取专辑详情 */

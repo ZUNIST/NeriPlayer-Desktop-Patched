@@ -340,6 +340,16 @@ fn validate_content(content: &str, limit: usize) -> AppResult<()> {
 
 /// platform: netease（target = 歌曲 id）| bilibili（target = BV 号或 av 号）
 /// sort: hot | newest | recommended（B 站没有推荐，按热门处理）
+/// 把前端 target 转成网易云评论线程 id：
+/// album:<id> → R_AL_3_<id>（专辑），其余按歌曲 R_SO_4_<id>
+fn netease_thread_id(target: &str) -> AppResult<String> {
+    if let Some(rest) = target.strip_prefix("album:") {
+        Ok(format!("R_AL_3_{}", parse_id(rest, "netease album id")?))
+    } else {
+        Ok(format!("R_SO_4_{}", parse_id(target, "netease song id")?))
+    }
+}
+
 #[tauri::command]
 pub async fn get_comments(
     platform: String,
@@ -352,9 +362,9 @@ pub async fn get_comments(
     let page = page.unwrap_or(1).max(1);
     match platform.as_str() {
         "netease" => {
-            let song_id = parse_id(&target, "netease song id")?;
+            let thread_id = netease_thread_id(&target)?;
             let sort_type = match sort.as_str() { "newest" => 3, "recommended" => 99, _ => 2 };
-            let body = state.netease().get_song_comments(song_id, page, PAGE_SIZE, sort_type, cursor.as_deref()).await?;
+            let body = state.netease().get_resource_comments(&thread_id, page, PAGE_SIZE, sort_type, cursor.as_deref()).await?;
             let data = &body["data"];
             let items = netease_items(data);
             Ok(CommentPage {
@@ -393,8 +403,8 @@ pub async fn get_comment_replies(
     let root = parse_id(&comment_id, "comment id")?;
     match platform.as_str() {
         "netease" => {
-            let song_id = parse_id(&target, "netease song id")?;
-            let body = state.netease().get_song_comment_replies(song_id, root, PAGE_SIZE, cursor.as_deref()).await?;
+            let thread_id = netease_thread_id(&target)?;
+            let body = state.netease().get_resource_comment_replies(&thread_id, root, PAGE_SIZE, cursor.as_deref()).await?;
             let data = &body["data"];
             let items = netease_items(data);
             // 楼中楼按时间翻页：优先取 data.time，缺失时退回本页最后一条的时间
@@ -442,7 +452,7 @@ pub async fn send_comment(
     match platform.as_str() {
         "netease" => {
             validate_content(&content, NETEASE_LENGTH_LIMIT)?;
-            let song_id = parse_id(&target, "netease song id")?;
+            let thread_id = netease_thread_id(&target)?;
             let reply_to = reply_to_id.as_deref().map(|id| parse_id(id, "comment id")).transpose()?;
             if !state.netease().has_comment_login() {
                 return Ok(CommentActionResult::failure("permission", Some(301)));
@@ -450,7 +460,7 @@ pub async fn send_comment(
             let Ok(token) = mint_comment_token(&app).await else {
                 return Ok(CommentActionResult::failure("verification", None));
             };
-            let body = state.netease().send_song_comment(song_id, &content, reply_to, &token).await?;
+            let body = state.netease().send_resource_comment(&thread_id, &content, reply_to, &token).await?;
             Ok(netease_result(&body))
         }
         "bilibili" => {

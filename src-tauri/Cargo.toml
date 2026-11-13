@@ -68,6 +68,8 @@ image = { version = "0.25", default-features = false, features = ["gif", "jpeg",
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service"] }
 tauri-plugin-log = "2.9.0"
 tauri-plugin-single-instance = "2"
+# 记住窗口尺寸/位置/最大化状态，重启后恢复
+tauri-plugin-window-state = "2"
 rusqlite = { version = "0.40", features = ["bundled"] }
 tauri-plugin-global-shortcut = "2"
 
@@ -114,3 +116,7 @@ opt-level = 3
 
 [profile.dev.package.rquickjs-core]
 opt-level = 2
+
+# 去掉调试符号：二进制更小，启动时映射的页更少
+[profile.release]
+strip = true
