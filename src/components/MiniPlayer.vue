@@ -417,7 +417,10 @@ defineExpose({
 .mini-player {
   position: fixed;
   bottom: 0;
-  left: 80px;
+  /* 横贯整个窗口底部：不再让开左侧 80px 的导航栏。
+     侧栏 z-index 为 2、本层为 100，因此侧栏底部会被本层覆盖，
+     表现为「底栏垫在侧栏之下、通栏到底」，与 Spotify / Apple Music 一致。 */
+  left: 0;
   right: 0;
   height: var(--mini-player-height, 76px);
   background: var(--md-surface-container-low);
@@ -521,7 +524,11 @@ defineExpose({
 .mp-body {
   display: flex;
   align-items: center;
-  padding: 0 16px;
+  /* 底栏背景已通栏到窗口左边缘，但内容仍要让开 80px 的侧栏，
+     否则封面会贴到窗口最左边，与上方内容的左边距（侧栏 80 + 16）错位。
+     左 96 = 侧栏宽度 80 + 常规内边距 16；这样封面与内容区左对齐，
+     三栏的居中位置也与改前的布局完全一致。 */
+  padding: 0 16px 0 calc(80px + 16px);
   height: 71px; // 76 - 5px 进度条
   gap: 16px;
   transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease;
