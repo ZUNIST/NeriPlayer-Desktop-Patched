@@ -214,6 +214,19 @@ App 内唯一指向「去哪获取新版本」的入口是 **设置 → 关于 �
 
 ---
 
+## 16. 歌手页歌曲行增加「更多」按钮（方案 B）
+
+四个歌手页（网易云 / B 站 / 本地 / YouTube）的歌曲行原先只有右键菜单，没有歌单 / 专辑页那种可见的 ⋮ 按钮。本次补齐，且**复用页面已有的 `TrackContextMenu` 实例**，不新造菜单、不复制菜单项：
+
+- `src/views/NeteaseArtistView.vue`、`LocalArtistView.vue`（行容器是 `div`）：时长后加 `<button class="track-more">`，`@click.stop="trackMenuRef?.open($event, track)"`。
+- `src/views/BiliArtistView.vue`、`YouTubeArtistView.vue`（行容器本身是 `<button>`）：用 `<span class="track-more" style="cursor: pointer">` 避免按钮嵌套；YouTube 走页面已有的 `openTrackMenu($event, section, item)`，以便菜单里的「播放」仍能按 section 定位。
+- 按钮外观直接复用 `src/styles/detail-view.scss` 里的 `.track-more`（32px 圆形、平时 `opacity: 0`、hover 行 0.6、hover 按钮 1 + 加深底色），四个页面都已 `@use '@/styles/detail-view.scss' as *`，无需新增样式。
+- `TrackContextMenu.open()` 本身已区分事件类型：`contextmenu` 在光标处弹出，普通 click 则按 `rect.left / rect.bottom + 4` 贴着按钮弹出，并自行 `preventDefault` + `stopPropagation`。因此点 ⋮ 与右键弹出的是**同一个菜单**（播放 / 下一首播放 / 添加到队列 / 添加到歌单 / 下载 / 复制歌曲名 / 复制歌名与歌手，另有按曲目出现的「管理跳过区间」「在文件夹中显示」），单击整行仍照常播放。
+
+注：歌单 / 专辑页的 ⋮ 用的是另一套 `ContextMenu`，菜单里含「多选」和「从歌单中移除」；歌手页没有多选模式，也不属于任何歌单，故未照搬。
+
+---
+
 ## 构建
 
 ```bash

@@ -175,6 +175,9 @@ onMounted(load)
             <div class="track-meta">{{ track.album }}</div>
           </div>
           <div class="track-duration">{{ formatDuration(track.durationMs) }}</div>
+          <button class="track-more" @click.stop="trackMenuRef?.open($event, track)">
+            <span class="material-symbols-rounded">more_vert</span>
+          </button>
         </div>
       </div>
     </template>

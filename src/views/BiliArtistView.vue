@@ -246,7 +246,7 @@ onUnmounted(() => { generation++; contentsGeneration++; collectionGeneration++ }
       <div v-if="loadingCollection && !collection" class="state-center"><span class="material-symbols-rounded spinning">progress_activity</span></div>
       <div class="track-list">
         <button v-for="(track, index) in activeTracks" :key="track.id" class="track-item" :class="{ active: player.currentTrack?.id === track.id }" @click="onTrackClick($event, () => playTrack(track))" @dblclick="onTrackDoubleClick($event, () => playTrack(track))" @contextmenu="trackMenuRef?.open($event, track)">
-          <span class="track-index">{{ index + 1 }}</span><div class="track-cover"><BilibiliCoverImage :src="track.coverUrl" loading="lazy"><span class="material-symbols-rounded filled">music_note</span></BilibiliCoverImage></div><div class="track-info"><div class="track-title">{{ track.title }}</div><div class="track-meta">{{ track.artist }}</div></div><span class="track-duration">{{ formatTrackDuration(track.durationMs) }}</span>
+          <span class="track-index">{{ index + 1 }}</span><div class="track-cover"><BilibiliCoverImage :src="track.coverUrl" loading="lazy"><span class="material-symbols-rounded filled">music_note</span></BilibiliCoverImage></div><div class="track-info"><div class="track-title">{{ track.title }}</div><div class="track-meta">{{ track.artist }}</div></div><span class="track-duration">{{ formatTrackDuration(track.durationMs) }}</span><span class="track-more" style="cursor: pointer" @click.stop="trackMenuRef?.open($event, track)"><span class="material-symbols-rounded">more_vert</span></span>
         </button>
       </div>
       <p v-if="!loadingCollection && !activeTracks.length" class="creator-empty">{{ t('player.artist_songs_empty') }}</p>
