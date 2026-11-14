@@ -131,7 +131,20 @@ POST /weapi/comment/checktoken/get
 | 当前播放项 | 歌名由主题色改纯白加粗、左侧音频均衡器条改纯白、去掉最左侧竖色条 |
 | 清空队列按钮 | 由 `--md-error` 红色纯文字改为**中性细边胶囊**（方案 A）：透明底 + 白 `1px` 细边 + 白字，hover 只做中性加深；非浮层/浅色主题用 `--md-on-surface` + `--md-outline-variant`，避免白底白字 |
 
-## 9. 已知限制（非客户端可解）
+## 9. 浅色模式柔光遮罩
+
+浅色主题的 surface 集中在 `#E6E2E8 ~ #FCF8FD`，整屏近白、层级差只有 5~7 个亮度点，长时间看刺眼。参考 iOS「降低白点值」的做法：**不改任何配色变量，只压亮部峰值**。
+
+| 项 | 实现 |
+|---|---|
+| 唯一可调参数 | `.light-theme` 里的 `--light-dim-strength: 0.08`；改这一个数字即可换强度（0 关闭、0.04 极轻、0.12 上限参考） |
+| 遮罩 | `body::after` 全屏 `position: fixed` + `rgba(28, 25, 22, var(--light-dim-strength, 0))`，`pointer-events: none`，`z-index: 2147483647` |
+| 只在浅色生效 | `html.light-theme:not(.desktop-lyrics-page):not(.tray-popup-page) body::after { opacity: 1 }`；深色时变量回退 0 且 opacity 0，`opacity .3s` 与主题切换同步 |
+| 排除透明窗口 | 桌面歌词 `desktop-lyrics-page`、托盘弹窗 `tray-popup-page` 的 html/body/#app 背景是 `transparent`，叠层会铺出灰块，必须排除 |
+| 与动态取色关系 | `themeColor.ts` / `colorExtractor.ts` 的 `applyThemeVars` 在浅色下只写色彩令牌，surface 始终由 `.light-theme` 提供；本遮罩不碰这些变量，换封面 / 换主题色都不受影响 |
+| 取舍 | 文字与专辑封面一起被轻压（与 iOS 行为一致）；播放页深色玻璃浮层也会略暗，8% 以内不明显；两个独立透明窗口不受影响 |
+
+## 10. 已知限制（非客户端可解）
 
 `/weapi/song/like` 对**数字专辑 / 独家首发**曲目返回：
 

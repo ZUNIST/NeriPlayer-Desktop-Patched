@@ -362,6 +362,8 @@ html.has-custom-bg.enhanced-blur #app :is(
 
 /* 浅色主题变量（中性灰白底，色彩由 themeColor.ts 动态注入） */
 .light-theme {
+  /* 浅色柔光强度：仿 iOS「降低白点值」，只调这一个数字即可改变深浅（0 = 关闭） */
+  --light-dim-strength: 0.08;
   --md-primary: rgb(101, 78, 163);
   --md-on-primary: rgb(255, 255, 255);
   --md-primary-container: rgb(233, 221, 255);
@@ -395,6 +397,25 @@ html.has-custom-bg.enhanced-blur #app :is(
   --md-inverse-surface: rgb(49, 48, 51);
   --md-inverse-on-surface: rgb(244, 239, 244);
   --md-inverse-primary: rgb(208, 188, 255);
+}
+
+/* 浅色模式柔光遮罩（仿 iOS「降低白点值」）
+   只压亮部峰值，不改任何配色变量，也不影响动态取色；
+   pointer-events: none 保证点击与窗口拖拽穿透；
+   透明窗口（桌面歌词、托盘弹窗）必须排除，否则会铺出灰色块。 */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  pointer-events: none;
+  background: rgba(28, 25, 22, var(--light-dim-strength, 0));
+  opacity: 0;
+  transition: opacity .3s ease;
+}
+
+html.light-theme:not(.desktop-lyrics-page):not(.tray-popup-page) body::after {
+  opacity: 1;
 }
 
 /* View Transition 圆形扩散动画 */
