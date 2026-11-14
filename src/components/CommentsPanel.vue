@@ -951,20 +951,28 @@ function enterDelay(index: number): string {
     margin-right: 2px;
     padding-top: 0;
     border-radius: 18px;
-    /* 透明玻璃：底色几乎不可见，靠模糊 + 细边勾勒轮廓 */
-    background: rgb(255 255 255 / 0.07);
-    backdrop-filter: blur(72px) saturate(180%) brightness(1.22);
-    border: 1px solid rgb(255 255 255 / 0.16);
+    /* 与播放队列同一套底色：播放页同系深色玻璃，只做暗化 + 轻度磨砂。
+       blur 保持较小，底下的动态着色器才透得出来（72px 会把色彩流动平均掉）。 */
+    background: rgb(0 0 0 / 0.24);
+    backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid rgb(255 255 255 / 0.12);
     box-shadow: none;
     overflow: hidden;
+    /* 关键：深色底上必须显式给亮色，否则浅色主题会继承全局黑字 */
+    color: #ffffff;
 
     /* 局部覆盖颜色变量：只影响这个面板，不污染深色主题的其他区域 */
-    --md-on-surface: #1c1b1f;
-    --md-on-surface-variant: #3f3b45;
-    --md-surface: rgb(255 255 255 / 0.1);
-    --md-surface-container: rgb(255 255 255 / 0.12);
-    --md-surface-container-high: rgb(255 255 255 / 0.16);
-    --md-outline-variant: rgb(255 255 255 / 0.16);
+    --md-on-surface: #ffffff;
+    --md-on-surface-variant: rgb(255 255 255 / 0.72);
+    --md-surface: rgb(255 255 255 / 0.08);
+    --md-surface-container: rgb(255 255 255 / 0.06);
+    --md-surface-container-high: rgb(255 255 255 / 0.11);
+    --md-surface-container-highest: rgb(255 255 255 / 0.16);
+    --md-outline-variant: rgb(255 255 255 / 0.14);
+    --md-secondary-container: rgb(255 255 255 / 0.16);
+    --md-on-secondary-container: #ffffff;
+    --md-primary-container: rgb(255 255 255 / 0.18);
+    --md-on-primary-container: #ffffff;
 
     /* 发评论区不再自成一块底色，与列表连成一体 */
     .comments-composer {
@@ -972,10 +980,15 @@ function enterDelay(index: number): string {
       border-top: 1px solid rgb(255 255 255 / 0.12);
     }
 
-    /* 卡片在极透的底上靠细边而不是填充色区分 */
+    /* 卡片在深色玻璃上靠细边而不是填充色区分 */
     .comment {
       border: 1px solid rgb(255 255 255 / 0.14);
     }
+
+    /* 主题色胶囊 / 文字按钮在暗底上对比不足，统一改白色系 */
+    .comments-pill-btn,
+    .comment-chip-btn,
+    .comment-text-btn { color: rgb(255 255 255 / 0.86); }
   }
 }
 

@@ -484,14 +484,16 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
   }
 }
 
-/* 覆盖模式的进场：从下往上浮，与评论区一致 */
-.queue-overlay--inline.queue-sheet-enter-from,
-.queue-overlay--inline.queue-sheet-leave-to {
+/* 覆盖模式的进场：与评论区完全同款（从下往上浮 24px + 淡入淡出）。
+   选择器必须比下面的非 inline 通用规则多一个 .queue-overlay：
+   否则通用规则因特异性打平且位置靠后，会把它覆盖成「从右侧滑入、无 opacity 过渡」。 */
+.queue-overlay.queue-overlay--inline.queue-sheet-enter-from,
+.queue-overlay.queue-overlay--inline.queue-sheet-leave-to {
   .queue-panel { transform: translateY(24px); opacity: 0; }
 }
 
-.queue-overlay--inline.queue-sheet-enter-active .queue-panel,
-.queue-overlay--inline.queue-sheet-leave-active .queue-panel {
+.queue-overlay.queue-overlay--inline.queue-sheet-enter-active .queue-panel,
+.queue-overlay.queue-overlay--inline.queue-sheet-leave-active .queue-panel {
   transition: transform 260ms var(--ease-emphasized-decel), opacity 200ms ease;
 }
 

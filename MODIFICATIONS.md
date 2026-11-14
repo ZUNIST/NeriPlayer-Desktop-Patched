@@ -123,9 +123,9 @@ POST /weapi/comment/checktoken/get
 | 项 | 实现 |
 |---|---|
 | 就地渲染 | `NowPlaying.vue` 的 `.np-right` 作为定位基准，两个面板直接渲染；原先 `Teleport to body` 的目标未挂载时会静默失败（按钮有动画、面板不出现） |
-| 评论玻璃 | 宽 60%、高 `calc(100% - 12px)`、右侧留 2px、圆角 18px、`blur(72px) saturate(180%) brightness(1.22)`；发评论区去掉底色 |
-| 队列玻璃 | 与播放页同系 `rgb(0 0 0 / .24)` + `blur(20px) saturate(150%)`，尺寸/圆角/缝隙与评论区一致 |
-| 进场动画 | 从下往上浮 24px + opacity，用 `<Transition>` |
+| 玻璃底色 | 两个面板统一为播放页同系深色玻璃 `rgb(0 0 0 / .24)` + `blur(20px) saturate(150%)` + `1px` 白边；宽 60%、高 `calc(100% - 12px)`、右侧留 2px、圆角 18px；发评论区去掉底色 |
+| 文字 | 深色玻璃上统一白字（面板根 `color:#fff` + 覆盖 `--md-on-surface*` 与容器/胶囊配色变量），否则浅色主题会继承黑字 |
+| 进场动画 | 从下往上浮 24px + opacity，`<Transition>`，`transform 260ms` / `opacity 200ms`。**队列的 inline 选择器必须比非 inline 通用规则多一个 `.queue-overlay`**，否则通用规则位置靠后会把它覆盖成「从右侧滑入且无淡入淡出」 |
 | 开关 | 面板打开时再次点击同一按钮即关闭（评论、队列各自独立） |
 | 文字可读性 | 面板根显式 `color: #fff` 并覆盖 `--md-on-surface*`；否则浅色主题下会继承全局黑字 |
 | 当前播放项 | 歌名由主题色改纯白加粗、左侧音频均衡器条改纯白、去掉最左侧竖色条 |
