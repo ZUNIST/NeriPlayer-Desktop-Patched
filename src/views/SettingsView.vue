@@ -1354,7 +1354,7 @@ const volumeBalanceLabel = computed(() => {
   return t(volumeBalance.value < 0 ? 'settings.volume_balance_left' : 'settings.volume_balance_right', { percent })
 })
 
-const PROJECT_REPOSITORY_URL = 'https://github.com/cwuom/NeriPlayer-Desktop'
+const PROJECT_REPOSITORY_URL = 'https://github.com/ZUNIST/NeriPlayer-Desktop-Patched'
 const FFMPEG_LEGAL_URL = 'https://ffmpeg.org/legal.html'
 // 随包的 FFmpeg 是否加载成功、加载的是哪个版本；没加载上时说明哪些格式受影响
 const ffmpegComponentText = computed(() => {

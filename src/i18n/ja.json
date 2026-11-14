@@ -1433,7 +1433,7 @@
     "about_desc": "バージョン、プロジェクト、開発者モード",
     "version_info": "バージョン {version} · Tauri 2 + Vue 3",
     "github": "GitHubリポジトリ",
-    "github_desc": "ソースコードを見る",
+    "github_desc": "パッチ版のソースとリリースを見る",
     "ffmpeg_component": "FFmpeg オーディオデコード",
     "ffmpeg_component_loaded": "Opus や E-AC-3 などをデコード · avcodec {version} · LGPL-2.1 以降でライセンス",
     "ffmpeg_component_unavailable": "読み込めていないため、Opus や E-AC-3 などは現在再生できません",

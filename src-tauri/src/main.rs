@@ -50,14 +50,98 @@ fn classify_playback_finish(
     }
 }
 
-/// 窗口显示后重新应用持久化的窗口状态。
+/// `main` 窗口显示后重新应用持久化的窗口状态。
 /// 插件恢复时窗口仍是隐藏的，Windows 下对隐藏窗口最大化无效，所以 show 之后再补一次。
+/// 这里不直接用 `restore_state`：它恢复 maximized 时仍会先按「最大化时记录的物理尺寸」
+/// set_size，刚 show 的窗口 maximize 偶发不生效就会停在中间尺寸——表现为启动时
+/// 窗口突然变小。改为分支处理：最大化时只 maximize（不 set_size），否则恢复原尺寸。
 #[tauri::command]
 fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
     use tauri_plugin_window_state::{StateFlags, WindowExt};
-    window
-        .restore_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
-        .map_err(|error| error.to_string())
+    if window.label() != "main" {
+        return window
+            .restore_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+            .map_err(|error| error.to_string());
+    }
+    let dir = window
+        .app_handle()
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let path = dir.join(".window-state.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let Ok(states) =
+        serde_json::from_str::<std::collections::HashMap<String, SavedWindowState>>(&text)
+    else {
+        return Ok(());
+    };
+    let Some(state) = states.get(window.label()) else {
+        return Ok(());
+    };
+
+    if state.maximized {
+        // 最大化窗口的还原位置记录在 prev_*；绝不能把最大化时的尺寸当普通尺寸设置
+        if state.prev_x != 0.0 || state.prev_y != 0.0 {
+            let _ = window.set_position(tauri::PhysicalPosition::new(
+                state.prev_x as i32,
+                state.prev_y as i32,
+            ));
+        }
+        let _ = window.maximize();
+    } else {
+        let _ = window.set_position(tauri::PhysicalPosition::new(
+            state.x as i32,
+            state.y as i32,
+        ));
+        let _ = window.set_size(tauri::PhysicalSize::new(
+            state.width as u32,
+            state.height as u32,
+        ));
+    }
+    Ok(())
+}
+
+/// `tauri-plugin-window-state` 写出的 `.window-state.json` 条目。
+/// 字段类型按插件实际输出对齐，全部用 f64 兼容整数/浮点两种序列化形态。
+#[derive(serde::Deserialize)]
+struct SavedWindowState {
+    width: f64,
+    height: f64,
+    x: f64,
+    y: f64,
+    #[serde(default)]
+    prev_x: f64,
+    #[serde(default)]
+    prev_y: f64,
+    #[serde(default)]
+    maximized: bool,
+}
+
+/// 清理状态文件里历史遗留的一次性验证窗口条目（label 带 uuid，永不复用），
+/// 配合插件的 `with_filter` 让文件不再无限膨胀。
+fn cleanup_window_state_file(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    let Ok(dir) = app.path().app_data_dir() else {
+        return;
+    };
+    let path = dir.join(".window-state.json");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(mut states) =
+        serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&text)
+    else {
+        return;
+    };
+    let before = states.len();
+    states.retain(|label, _| !label.starts_with("netease-comment-token-"));
+    if states.len() != before {
+        if let Ok(serialized) = serde_json::to_string_pretty(&states) {
+            let _ = std::fs::write(&path, serialized);
+        }
+    }
 }
 
 fn main() {
@@ -101,11 +185,20 @@ fn main() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
-        // 启动时恢复上次的窗口尺寸/位置/最大化状态，退出时自动保存
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // 启动时恢复上次的窗口尺寸/位置/最大化状态，退出时自动保存。
+        // main 的初始恢复交给 show 之后的 apply_window_state（见其文档注释）；
+        // 一次性验证窗口（netease-comment-token-<uuid>）不进状态文件。
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_filter(|label| label == "main" || label == "tray-popup")
+                .skip_initial_state("main")
+                .build(),
+        )
         .manage(AppState::new())
         .setup(move |app| {
             let handle = app.handle().clone();
+            // 状态文件里的一次性验证窗口条目只在这里清一次；新增已被 with_filter 挡住
+            cleanup_window_state_file(&handle);
             // 日志插件初始化时把 max_level 放到了 Trace，这里收回到设置的级别
             neri_player_desktop::logging::set_runtime_level(log_cfg.level);
 

@@ -187,6 +187,33 @@ B 站 `fnval=272` 返回的是 DASH 音频分片（`.m4s`），原下载链路�
 
 ---
 
+## 14. 关于页的 GitHub 入口指向本补丁仓库
+
+上游**没有内置自动更新器**：`src-tauri/Cargo.toml` 不含 `tauri-plugin-updater`，`tauri.conf.json` 无 `plugins.updater` 配置，`README_EN.md` 也明确写明「no in-app automatic updater. Install the relevant Release manually.」。因此官方版本不会在后台覆盖本机补丁，此前「必须关闭自动更新」的提醒属于多余 precaution；后续版本仍建议保持 App 更新设置不变，但不存在被静默替换的机制。
+
+App 内唯一指向「去哪获取新版本」的入口是 **设置 → 关于 → GitHub 仓库** 卡片，原值 `https://github.com/cwuom/NeriPlayer-Desktop`。本次改为：
+
+- `src/views/SettingsView.vue` 的 `PROJECT_REPOSITORY_URL` → `https://github.com/ZUNIST/NeriPlayer-Desktop-Patched`（源码与 Release 都在该仓库）。
+- `src/i18n/{zh-CN,zh-TW,en,ja}.json` 的 `settings.github_desc`：从「查看源代码」改为提示补丁源码与版本更新，四语言同步。
+
+**刻意未改**的两处官方引用：`src/modules/audioEffects/model.ts` 与 `src-tauri/src/lyrics/external.rs` 的 `USER_AGENT` 中带 `cwuom/NeriPlayer` 的注释/字符串——前者是 GPL-3.0 要求的原始作者署名，必须保留；后者只是外部歌词服务的 User-Agent 标识，改动反而可能让服务端拒绝识别，且与更新源无关。`src-tauri/src/sync/github_api.rs` 的 `GITHUB_API_BASE` 属于云同步备份功能（owner/repo 由用户在设置里自行配置），同样与更新源无关。
+
+如果将来需要真正的「App 内检查更新 / 一键安装」，必须引入 `tauri-plugin-updater`、配置 `latest.json` 与 minisign 公钥，并在自己的 Release 里产出对应签名产物；仅替换链接不等于自动更新。
+
+---
+
+## 15. 修复「启动时窗口突然变小」
+
+`tauri-plugin-window-state` 保存状态时，若窗口处于最大化，记录的 `width/height` 是**最大化时的物理尺寸**（如 1728×1296），同时 `maximized: true`。它的 `restore_state` 恢复时仍会先按该尺寸 `set_size`、再 `maximize()`；而刚 show 的窗口在 Windows 上 maximize 偶发不生效，窗口就停在「最大化的中间尺寸」上——表现为打开窗口时突然比预期小一圈，且带 DPI 换算偏差，偶发且难复现。
+
+修复（`src-tauri/src/main.rs`）：
+
+- 插件初始化加 `.skip_initial_state("main")`，`main` 的初始恢复由 show 后的 `apply_window_state` 接管；其余窗口（`tray-popup`）仍走插件逻辑。
+- `apply_window_state` 对 `main` 分支处理：读 `.window-state.json`，`maximized` 时只 `set_position(prev_*)` + `maximize()`，**不再 set_size**；非最大化才恢复保存的位置与尺寸（物理像素）。彻底消除中间尺寸闪现。
+- 插件加 `.with_filter(|label| label == "main" || label == "tray-popup")`，一次性验证窗口（`netease-comment-token-<uuid>`，每次点赞/发评都会生成新 uuid）不再写进状态文件；启动时 `cleanup_window_state_file()` 清掉历史遗留条目，文件不再无限膨胀。
+
+---
+
 ## 构建
 
 ```bash
