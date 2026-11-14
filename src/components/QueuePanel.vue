@@ -465,6 +465,15 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
     --md-surface-container-high: rgb(255 255 255 / 0.11);
     --md-outline-variant: rgb(255 255 255 / 0.14);
 
+    /* 清空队列：方案 A，白字 + 白细边 + 透明底，与右侧圆形图标按钮同系；
+       hover 只用中性加深，不再出现红色警示色 */
+    .queue-clear {
+      color: #ffffff;
+      border-color: rgb(255 255 255 / 0.28);
+      &:hover { background: rgb(255 255 255 / 0.1); }
+      &:focus-visible { outline-color: rgb(255 255 255 / 0.7); }
+    }
+
     /* 当前播放项：只保留浅色底，不再显示最左侧的强调色条 */
     .queue-item.active {
       background: rgb(255 255 255 / 0.1);
@@ -538,15 +547,20 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
   text-align: center;
 }
 
+/* 方案 A：中性细边胶囊。破坏性语义不再用红色表达，靠边框明确「这是一个按钮」；
+   静止态用主题变量（侧边栏/浅色主题也清晰），浮层里再由 .queue-overlay--inline 覆盖成白字白边。 */
 .queue-clear {
   font-size: 12px;
   font-weight: 500;
-  color: var(--md-error, #FFB4AB);
+  color: var(--md-on-surface);
+  background: transparent;
+  border: 1px solid var(--md-outline-variant);
   padding: 6px 12px;
   border-radius: var(--radius-full);
-  transition: background var(--duration-short);
+  transition: background var(--duration-short), border-color var(--duration-short);
 
-  &:hover { background: color-mix(in srgb, var(--md-error, #FFB4AB) 10%, transparent); }
+  &:hover { background: var(--md-surface-container-high); }
+  &:focus-visible { outline: 2px solid var(--md-primary); outline-offset: 2px; }
 }
 
 .queue-close,
