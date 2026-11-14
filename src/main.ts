@@ -92,13 +92,14 @@ async function mountWindow() {
   installClipboardPasteGuard()
   installHostBackgroundSync()
 
-  // Vue 挂载完成后显示窗口，避免闪烁；显示后再补一次窗口状态恢复
-  // （隐藏状态下 Windows 不允许最大化，插件那一次恢复会丢掉 maximized）
+  // Vue 挂载完成后交给 Rust 恢复窗口状态并显示窗口。
+  // 不要在这里先 show()：那会让窗口以配置里的默认尺寸露出，等 maximize 生效前
+  // 有几十到几百毫秒的可见间隔，表现为启动时「小窗口闪一下再变大」。
+  // 兜底：命令失败时仍要显示窗口，否则整个应用不可见。
   if (isTauri()) {
-    void getCurrentWindow()
-      .show()
-      .then(() => invoke('apply_window_state'))
-      .catch(() => {})
+    void invoke('apply_window_state').catch(() => {
+      void getCurrentWindow().show().catch(() => {})
+    })
   }
 }
 

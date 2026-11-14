@@ -50,7 +50,10 @@ fn classify_playback_finish(
     }
 }
 
-/// `main` 窗口显示后重新应用持久化的窗口状态。
+/// 恢复持久化的窗口状态，并**负责把 `main` 窗口显示出来**。
+///
+/// 前端在 Vue 挂载完成后调用一次，调用方不要再自己 `show()`：显示与最大化
+/// 必须在同一次命令内连续执行，否则会看到「先按默认尺寸露出再变大」的闪烁。
 ///
 /// 不直接用 `restore_state`：它恢复 maximized 时仍会先按「最大化时记录的物理尺寸」
 /// set_size，刚 show 的窗口 maximize 偶发不生效就会停在中间尺寸。
@@ -64,40 +67,65 @@ fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
             .restore_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
             .map_err(|error| error.to_string());
     }
+    let should_maximize = restore_main_window(&window).unwrap_or_else(|error| {
+        log::warn!(target: "window", "failed to restore window state: {error}");
+        false
+    });
+    // 窗口以 `visible: false` 创建（tauri.conf.json），显示由本命令负责。
+    //
+    // 显示与最大化必须在同一次调用内连续完成：之前是前端 `show()` 之后再 invoke 本命令，
+    // 两次之间隔了一次 IPC 往返，窗口会先按默认尺寸露出几十到几百毫秒再变大，
+    // 表现为启动时「小窗口闪一下」。
+    //
+    // 之所以先 maximize 再 show：Windows 的 `SW_MAXIMIZE` 会连带把隐藏窗口显示出来，
+    // 最大化场景可以做到「一露面就是最大化」，完全没有中间帧；个别情况下隐藏窗口
+    // maximize 不生效，所以 show 之后再补一次（对已最大化的窗口是空操作）。
+    if should_maximize {
+        let _ = window.maximize();
+    }
+    let _ = window.show();
+    if should_maximize {
+        let _ = window.maximize();
+    }
+    Ok(())
+}
+
+/// 按持久化状态摆好 `main` 窗口的尺寸与位置，此时窗口仍是隐藏的。
+/// 返回 `true` 表示调用方应在显示窗口后对其执行 `maximize()`。
+///
+/// 任何早期返回都不改动窗口，调用方随后照常显示即可，不会出现「窗口不出现」。
+fn restore_main_window(window: &tauri::WebviewWindow) -> Result<bool, String> {
     let Some(path) = window_state_path(window.app_handle()) else {
-        return Ok(());
+        return Ok(false);
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
-        return Ok(());
+        return Ok(false);
     };
     let Ok(states) =
         serde_json::from_str::<std::collections::HashMap<String, SavedWindowState>>(&text)
     else {
-        return Ok(());
+        return Ok(false);
     };
     let Some(state) = states.get(window.label()) else {
-        return Ok(());
+        return Ok(false);
     };
 
-    let kind = classify_saved_size(&window, state);
-    if !state.maximized {
-        match kind {
-            SavedSizeKind::LooksMaximized => log::warn!(
-                target: "window",
-                "restored size {}x{} at ({}, {}) looks like a maximized window recorded as normal; maximizing instead",
-                state.width, state.height, state.x, state.y
-            ),
-            SavedSizeKind::Invalid => {
-                log::warn!(
-                    target: "window",
-                    "ignoring invalid restored window size {}x{}; keeping the default size",
-                    state.width, state.height
-                );
-                // 保留配置里的默认尺寸，连位置都不动，避免把窗口丢到屏幕外
-                return Ok(());
-            }
-            SavedSizeKind::Usable => {}
-        }
+    let kind = classify_saved_size(window, state);
+    if kind == SavedSizeKind::Invalid && !state.maximized {
+        log::warn!(
+            target: "window",
+            "ignoring invalid restored window size {}x{}; keeping the default size",
+            state.width, state.height
+        );
+        // 保留配置里的默认尺寸，连位置都不动，避免把窗口丢到屏幕外
+        return Ok(false);
+    }
+    if kind == SavedSizeKind::LooksMaximized && !state.maximized {
+        log::warn!(
+            target: "window",
+            "restored size {}x{} at ({}, {}) looks like a maximized window recorded as normal; maximizing instead",
+            state.width, state.height, state.x, state.y
+        );
     }
 
     if state.maximized || kind == SavedSizeKind::LooksMaximized {
@@ -108,18 +136,18 @@ fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
                 state.prev_y as i32,
             ));
         }
-        let _ = window.maximize();
-    } else {
-        let _ = window.set_position(tauri::PhysicalPosition::new(
-            state.x as i32,
-            state.y as i32,
-        ));
-        let _ = window.set_size(tauri::PhysicalSize::new(
-            state.width as u32,
-            state.height as u32,
-        ));
+        return Ok(true);
     }
-    Ok(())
+
+    let _ = window.set_position(tauri::PhysicalPosition::new(
+        state.x as i32,
+        state.y as i32,
+    ));
+    let _ = window.set_size(tauri::PhysicalSize::new(
+        state.width as u32,
+        state.height as u32,
+    ));
+    Ok(false)
 }
 
 /// `tauri-plugin-window-state` 写出的 `.window-state.json` 条目。
@@ -264,7 +292,7 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         // 启动时恢复上次的窗口尺寸/位置/最大化状态，退出时自动保存。
-        // main 的初始恢复交给 show 之后的 apply_window_state（见其文档注释）；
+        // main 的初始恢复与显示都交给 apply_window_state（见其文档注释）；
         // 一次性验证窗口（netease-comment-token-<uuid>）不进状态文件。
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -322,6 +350,29 @@ fn main() {
             #[cfg(windows)]
             if let Some(win) = app.get_webview_window("main") {
                 pause_rendering_while_minimized(win);
+            }
+
+            // 显示窗口的职责已交给 apply_window_state（前端挂载完成后调用），
+            // 这样 show 与 maximize 能在同一次调用内连续完成，避免启动闪烁。
+            // 代价是显示依赖前端把命令调起来：万一前端早期异常没调到，这里兜底显示，
+            // 避免出现「进程在跑但一个窗口都没有」的死局。
+            if let Some(win) = app.get_webview_window("main") {
+                let fallback = win.clone();
+                let spawned = std::thread::Builder::new()
+                    .name("window-show-fallback".into())
+                    .spawn(move || {
+                        std::thread::sleep(Duration::from_secs(10));
+                        if !fallback.is_visible().unwrap_or(true) {
+                            log::warn!(
+                                target: "window",
+                                "main window still hidden after 10s; showing it as a fallback"
+                            );
+                            let _ = fallback.show();
+                        }
+                    });
+                if let Err(error) = spawned {
+                    log::warn!(target: "window", "could not start window show fallback: {error}");
+                }
             }
 
             // 系统托盘：关闭主窗口后收进托盘继续播放
