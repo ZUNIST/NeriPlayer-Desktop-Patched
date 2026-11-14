@@ -539,7 +539,12 @@ defineExpose({
   display: flex;
   align-items: center;
   gap: 12px;
-  flex: 1;
+  /* basis 取侧栏宽度（80）而不是 0：左侧要多覆盖被侧栏占住的那一段，
+     两个 flex:1 才会一个宽 80、一个窄 80，中间控制组因此右移 40px，
+     正好落在「侧栏右侧 → 窗口右边」这段的中点。
+     若两侧都是 flex:1 0%（等分），控制组会居中于整个窗口 ——
+     左侧被侧栏压着，视觉上就偏左了。 */
+  flex: 1 1 80px;
   min-width: 0;
   cursor: pointer;
   padding: 4px;
