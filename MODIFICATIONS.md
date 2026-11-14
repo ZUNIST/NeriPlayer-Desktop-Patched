@@ -269,6 +269,38 @@ App 内唯一指向「去哪获取新版本」的入口是 **设置 → 关于 �
 
 ---
 
+## 19. 自动下载「常听」歌曲
+
+需求来自网易云的「边听边存 → 仅存常听歌曲」：把自己反复听的歌自动存到本地。本项目按「播放达标即下载」实现，默认关闭。
+
+### 判定为什么不用「累计播放满 N 次」
+
+网易云那套阈值没有公开文档，是黑盒，但它的意图可以反推：**只留真正会反复听的，省空间**。直接用「累计播放 ≥ 5 次」会有个明显偏差——三个月前循环过、现在早就不听的歌也会被下载，那是「曾经听过」而不是「常听」。
+
+所以判定拆成两条，都基于已有的按天 bucket：
+
+1. **近期重复**：统计窗口内播放次数 ≥ `autoDownloadMinPlays`（默认 10 天内 3 次）。窗口口径与统计页一致，按 `SyncPlaybackStatBucket.day_start_at` 聚合，因此能表达「最近」。
+2. **听完整度**：`累计收听时长 ÷ (次数 × 单曲时长) ≥ 60%`。这一条用来区分「真的在听」和「开播就切」——一首歌播了 3 次但每次只听了 10 秒，不该算常听。单曲时长缺失时按通过处理，宁可多下一首，也不要因为早期记录没时长就永远不下。
+
+「本地未下载」由前端用现成的 `isDownloaded()` 判断，不重复占空间。
+
+### 实现
+
+- **`stats_cmd.rs`**：新增命令 `check_auto_download_candidate(track, window_days, min_plays, min_completion)`，后端自行派生身份键（避免两端哈希规则不一致导致查不到统计），返回 `AutoDownloadCandidate { qualified, recentPlays, recentListenMs, completion, reason }`。聚合与完整度计算抽成纯函数 `recent_window_totals()` / `completion_ratio()`，便于脱离 `AppState` 单测。
+- **`modules/download/autoDownload.ts`**（新文件）：`maybeAutoDownloadFrequent(track)`。依次检查总开关、来源（**只处理 `netease:`**，B 站 / YouTube 的 URL 解析与版权路径差异大，混进来会让失败原因难排查）、已下载 / 下载中、当日额度，然后调判定命令，达标则交给 `downloadStore.downloadTrack()`——队列、去重、失败重试、进度 UI 全部复用，不新增下载逻辑。
+- **当日额度**：`localStorage` 存 `neriplayer.autodownload.quota = {date, count}`，按本地日期跨天自动重置。失败不计入额度。
+- **触发点**：`playbackStats.submit()` 里 `record_playback_session` 成功之后，`void` 调用不 await。统计链路本身已确立「出问题不能影响播放」的约定，自动下载遵守同一条，全程静默失败。
+- **设置项**：`auto_download_frequent`（默认 `false`）、`auto_download_window_days`（10，区间 3~90）、`auto_download_min_plays`（3，1~50）、`auto_download_daily_limit`（10，1~100）。**`store.rs` 的 `AppSettings` / `Default` / `normalize()` 三处与前端 `settings.ts` 的 interface / DEFAULT / KEY 映射 / normalize / refs / watch 源 / return 共八处必须同步**，漏一处就会出现「读得到存不上」或 `save_settings` 丢字段。
+- **设置页**：主开关 + 开启后展开三个滑块（统计窗口 / 最少播放 / 每日上限），并显示「今日已自动下载 N / M 首」。四语言文案齐备。
+
+### 验证边界
+
+`cargo test --lib` 通过（新增 3 个测试：窗口内外与跨曲目排除、完整度区分完整/跳过、缺元数据放行）；`pnpm build`、`tauri build` 通过，产物 79,364,096 字节，已部署。
+
+**未能验证的部分**：VIP / 独家版权歌曲拿不到 URL 会直接失败，这是网易云的限制（同第 16 节 `524` / `401` 的结论），需要真机听够 3 次才能观察到端到端效果。判定逻辑本身已有单测覆盖。
+
+---
+
 ## 构建
 
 ```bash

@@ -889,6 +889,7 @@ fn main() {
             stats_cmd::remove_playback_stats,
             stats_cmd::playback_stats_identity_key,
             stats_cmd::get_playback_stat_tracks,
+            stats_cmd::check_auto_download_candidate,
             user_data_cmd::load_user_data_snapshot,
             user_data_cmd::import_legacy_user_data,
             user_data_cmd::save_playback_state,

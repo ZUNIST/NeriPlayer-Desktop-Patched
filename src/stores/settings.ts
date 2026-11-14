@@ -127,6 +127,10 @@ export interface AppSettings {
   downloadQqMusicQuality: string
   downloadYoutubeQuality: string
   downloadBiliQuality: string
+  autoDownloadFrequent: boolean
+  autoDownloadWindowDays: number
+  autoDownloadMinPlays: number
+  autoDownloadDailyLimit: number
   ltServerUrl: string
   ltNickname: string
   ltAllowMemberControl: boolean
@@ -163,6 +167,15 @@ export const DEFAULT_DOWNLOAD_NAME_TEMPLATE = '%title% - %artist% - %album% - %s
 export const MIN_DOWNLOAD_PARALLELISM = 1
 export const MAX_DOWNLOAD_PARALLELISM = 8
 export const DEFAULT_DOWNLOAD_PARALLELISM = 6
+export const MIN_AUTO_DOWNLOAD_WINDOW_DAYS = 3
+export const MAX_AUTO_DOWNLOAD_WINDOW_DAYS = 90
+export const DEFAULT_AUTO_DOWNLOAD_WINDOW_DAYS = 10
+export const MIN_AUTO_DOWNLOAD_MIN_PLAYS = 1
+export const MAX_AUTO_DOWNLOAD_MIN_PLAYS = 50
+export const DEFAULT_AUTO_DOWNLOAD_MIN_PLAYS = 3
+export const MIN_AUTO_DOWNLOAD_DAILY_LIMIT = 1
+export const MAX_AUTO_DOWNLOAD_DAILY_LIMIT = 100
+export const DEFAULT_AUTO_DOWNLOAD_DAILY_LIMIT = 10
 export const MIN_MEDIA_CACHE_SIZE_MB = 256
 export const MAX_MEDIA_CACHE_SIZE_MB = 512 * 1024
 export const UI_SCALE_DEFAULT = 100
@@ -288,6 +301,10 @@ const DEFAULT_SETTINGS: AppSettings = {
   downloadQqMusicQuality: 'high',
   downloadYoutubeQuality: 'high',
   downloadBiliQuality: 'high',
+  autoDownloadFrequent: false,
+  autoDownloadWindowDays: DEFAULT_AUTO_DOWNLOAD_WINDOW_DAYS,
+  autoDownloadMinPlays: DEFAULT_AUTO_DOWNLOAD_MIN_PLAYS,
+  autoDownloadDailyLimit: DEFAULT_AUTO_DOWNLOAD_DAILY_LIMIT,
   ltServerUrl: 'https://neriplayer.hancat.work',
   ltNickname: '',
   ltAllowMemberControl: true,
@@ -383,6 +400,10 @@ const LEGACY_KEYS: Partial<Record<SettingKey, string>> = {
   downloadQqMusicQuality: 'download_qq_quality',
   downloadYoutubeQuality: 'download_youtube_quality',
   downloadBiliQuality: 'download_bili_quality',
+  autoDownloadFrequent: 'auto_download_frequent',
+  autoDownloadWindowDays: 'auto_download_window_days',
+  autoDownloadMinPlays: 'auto_download_min_plays',
+  autoDownloadDailyLimit: 'auto_download_daily_limit',
   ltServerUrl: 'lt_server_url',
   ltNickname: 'lt_nickname',
   ltAllowMemberControl: 'lt_allow_member_control',
@@ -500,6 +521,15 @@ function normalizeSnapshot(input: unknown): AppSettings {
   result.downloadParallelism = Number.isFinite(result.downloadParallelism)
     ? clamp(Math.round(result.downloadParallelism), MIN_DOWNLOAD_PARALLELISM, MAX_DOWNLOAD_PARALLELISM)
     : DEFAULT_DOWNLOAD_PARALLELISM
+  result.autoDownloadWindowDays = Number.isFinite(result.autoDownloadWindowDays)
+    ? clamp(Math.round(result.autoDownloadWindowDays), MIN_AUTO_DOWNLOAD_WINDOW_DAYS, MAX_AUTO_DOWNLOAD_WINDOW_DAYS)
+    : DEFAULT_AUTO_DOWNLOAD_WINDOW_DAYS
+  result.autoDownloadMinPlays = Number.isFinite(result.autoDownloadMinPlays)
+    ? clamp(Math.round(result.autoDownloadMinPlays), MIN_AUTO_DOWNLOAD_MIN_PLAYS, MAX_AUTO_DOWNLOAD_MIN_PLAYS)
+    : DEFAULT_AUTO_DOWNLOAD_MIN_PLAYS
+  result.autoDownloadDailyLimit = Number.isFinite(result.autoDownloadDailyLimit)
+    ? clamp(Math.round(result.autoDownloadDailyLimit), MIN_AUTO_DOWNLOAD_DAILY_LIMIT, MAX_AUTO_DOWNLOAD_DAILY_LIMIT)
+    : DEFAULT_AUTO_DOWNLOAD_DAILY_LIMIT
   result.downloadNameTemplate = result.downloadNameTemplate.trim() || DEFAULT_DOWNLOAD_NAME_TEMPLATE
   result.downloadDir = result.downloadDir.trim()
   // 网易云「较高」的取值是 higher（与播放页、Android 一致）；旧版设置页写的是 high
@@ -746,6 +776,10 @@ export const useSettingsStore = defineStore('settings', () => {
   const downloadQqMusicQuality = ref(initial.downloadQqMusicQuality)
   const downloadYoutubeQuality = ref(initial.downloadYoutubeQuality)
   const downloadBiliQuality = ref(initial.downloadBiliQuality)
+  const autoDownloadFrequent = ref(initial.autoDownloadFrequent)
+  const autoDownloadWindowDays = ref(initial.autoDownloadWindowDays)
+  const autoDownloadMinPlays = ref(initial.autoDownloadMinPlays)
+  const autoDownloadDailyLimit = ref(initial.autoDownloadDailyLimit)
   const ltServerUrl = ref(initial.ltServerUrl)
   const ltNickname = ref(initial.ltNickname)
   const ltAllowMemberControl = ref(initial.ltAllowMemberControl)
@@ -789,6 +823,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadParallelism, downloadAutoFillMetadata, downloadEmbedLyrics,
     downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
     downloadYoutubeQuality, downloadBiliQuality,
+    autoDownloadFrequent, autoDownloadWindowDays, autoDownloadMinPlays, autoDownloadDailyLimit,
     ltAllowMemberControl, ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice,
     playbackSpeed, playbackPitch, vinylEffectEnabled, audioEffects, loudnessGainMb, equalizerEnabled, equalizerPresetId,
     equalizerBands, desktopLyrics, showMenuBarLyrics, shortcutBindings, globalShortcutsEnabled,
@@ -888,6 +923,7 @@ export const useSettingsStore = defineStore('settings', () => {
     downloadParallelism, downloadAutoFillMetadata, downloadEmbedLyrics,
     downloadFollowPlaybackQuality, downloadNeteaseQuality, downloadQqMusicQuality,
     downloadYoutubeQuality, downloadBiliQuality,
+    autoDownloadFrequent, autoDownloadWindowDays, autoDownloadMinPlays, autoDownloadDailyLimit,
     ltAutoPauseOnMemberChange, ltShareAudioLinks, volume, audioOutputDevice, playbackSpeed, playbackPitch, vinylEffectEnabled, audioEffects,
     loudnessGainMb, equalizerEnabled, equalizerPresetId, equalizerBands, desktopLyrics, showMenuBarLyrics,
     shortcutBindings, globalShortcutsEnabled,

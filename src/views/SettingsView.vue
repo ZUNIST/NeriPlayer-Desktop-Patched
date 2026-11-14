@@ -58,6 +58,12 @@ import {
   MIN_MEDIA_CACHE_SIZE_MB,
   MAX_DOWNLOAD_PARALLELISM,
   MIN_DOWNLOAD_PARALLELISM,
+  MIN_AUTO_DOWNLOAD_WINDOW_DAYS,
+  MAX_AUTO_DOWNLOAD_WINDOW_DAYS,
+  MIN_AUTO_DOWNLOAD_MIN_PLAYS,
+  MAX_AUTO_DOWNLOAD_MIN_PLAYS,
+  MIN_AUTO_DOWNLOAD_DAILY_LIMIT,
+  MAX_AUTO_DOWNLOAD_DAILY_LIMIT,
   YOUTUBE_PLAYBACK_SOURCES,
   DEFAULT_LYRIC_SOURCES,
   ENHANCED_BLUR_RADIUS_MAX,
@@ -73,6 +79,7 @@ import { useListenTogetherStore } from '@/stores/listenTogether'
 import { isValidLtNickname, LT_NICKNAME_MAX_LENGTH } from '@/stores/listenTogether/protocol'
 import { usePlayerStore } from '@/stores/player'
 import { DEFAULT_LYRIC_OFFSET_MS, formatLyricOffsetMs } from '@/modules/lyrics/lyricOffset'
+import { getAutoDownloadQuota } from '@/modules/download/autoDownload'
 import { useToastStore } from '@/stores/toast'
 import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
 import { DEFAULT_DOWNLOAD_NAME_TEMPLATE } from '@/stores/settings'
@@ -134,9 +141,16 @@ const {
   downloadParallelism, downloadAutoFillMetadata, downloadEmbedLyrics,
   downloadFollowPlaybackQuality, downloadNeteaseQuality,
   downloadYoutubeQuality, downloadBiliQuality,
+  autoDownloadFrequent, autoDownloadWindowDays, autoDownloadMinPlays, autoDownloadDailyLimit,
   ltServerUrl, ltNickname, ltAllowMemberControl, ltAutoPauseOnMemberChange, ltShareAudioLinks,
   locale: settingLocale,
 } = storeToRefs(settings)
+
+// 今日已自动下载的数量存在 localStorage，展开开关时重新读一次即可
+const autoDownloadQuotaUsed = ref(getAutoDownloadQuota().count)
+watch(autoDownloadFrequent, () => {
+  autoDownloadQuotaUsed.value = getAutoDownloadQuota().count
+})
 
 const uiScaleOptions = computed(() => Array.from(
   { length: (uiScaleMax.value - UI_SCALE_MIN) / UI_SCALE_STEP + 1 },
@@ -2470,6 +2484,69 @@ useEscapeClose(
           <button v-if="downloadDir" class="m3-chip sm" :disabled="activeDownloadCount > 0" @click="resetDownloadDir">{{ t('settings.download_dir_reset') }}</button>
         </div>
       </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">repeat</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.auto_download_frequent') }}</div>
+          <div class="setting-desc">{{ t('settings.auto_download_frequent_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="autoDownloadFrequent" /><span class="track"><span class="thumb"><span v-if="autoDownloadFrequent" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <template v-if="autoDownloadFrequent">
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.auto_download_window') }}</div>
+            <div class="setting-desc">{{ t('settings.auto_download_window_desc') }}</div>
+            <EditableRangeValue
+              v-model="autoDownloadWindowDays"
+              class="setting-desc"
+              :min="MIN_AUTO_DOWNLOAD_WINDOW_DAYS"
+              :max="MAX_AUTO_DOWNLOAD_WINDOW_DAYS"
+              :step="1"
+              :display-value="t('settings.auto_download_window_value', { days: autoDownloadWindowDays })"
+              :aria-label="t('settings.auto_download_window')"
+            />
+          </div>
+          <input v-model.number="autoDownloadWindowDays" type="range" class="m3-slider" :min="MIN_AUTO_DOWNLOAD_WINDOW_DAYS" :max="MAX_AUTO_DOWNLOAD_WINDOW_DAYS" step="1" :aria-label="t('settings.auto_download_window')" />
+        </div>
+
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.auto_download_min_plays') }}</div>
+            <div class="setting-desc">{{ t('settings.auto_download_min_plays_desc') }}</div>
+            <EditableRangeValue
+              v-model="autoDownloadMinPlays"
+              class="setting-desc"
+              :min="MIN_AUTO_DOWNLOAD_MIN_PLAYS"
+              :max="MAX_AUTO_DOWNLOAD_MIN_PLAYS"
+              :step="1"
+              :display-value="t('settings.auto_download_min_plays_value', { count: autoDownloadMinPlays })"
+              :aria-label="t('settings.auto_download_min_plays')"
+            />
+          </div>
+          <input v-model.number="autoDownloadMinPlays" type="range" class="m3-slider" :min="MIN_AUTO_DOWNLOAD_MIN_PLAYS" :max="MAX_AUTO_DOWNLOAD_MIN_PLAYS" step="1" :aria-label="t('settings.auto_download_min_plays')" />
+        </div>
+
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.auto_download_daily_limit') }}</div>
+            <div class="setting-desc">{{ t('settings.auto_download_daily_limit_desc') }}</div>
+            <div class="setting-desc">{{ t('settings.auto_download_today', { used: autoDownloadQuotaUsed, limit: autoDownloadDailyLimit }) }}</div>
+            <EditableRangeValue
+              v-model="autoDownloadDailyLimit"
+              class="setting-desc"
+              :min="MIN_AUTO_DOWNLOAD_DAILY_LIMIT"
+              :max="MAX_AUTO_DOWNLOAD_DAILY_LIMIT"
+              :step="1"
+              :display-value="t('settings.auto_download_daily_limit_value', { count: autoDownloadDailyLimit })"
+              :aria-label="t('settings.auto_download_daily_limit')"
+            />
+          </div>
+          <input v-model.number="autoDownloadDailyLimit" type="range" class="m3-slider" :min="MIN_AUTO_DOWNLOAD_DAILY_LIMIT" :max="MAX_AUTO_DOWNLOAD_DAILY_LIMIT" step="1" :aria-label="t('settings.auto_download_daily_limit')" />
+        </div>
+      </template>
 
         </div>
 

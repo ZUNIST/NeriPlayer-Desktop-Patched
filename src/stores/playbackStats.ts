@@ -11,6 +11,7 @@ import {
   type StatsTrackKey,
 } from '@/modules/playback/playbackStatsTracker'
 import { createLogger } from '@/utils/logger'
+import { maybeAutoDownloadFrequent } from '@/modules/download/autoDownload'
 
 const log = createLogger('playbackStats')
 
@@ -82,6 +83,9 @@ export const usePlaybackStatsStore = defineStore('playbackStats', () => {
           localPlaylistId: snapshot.track.localPlaylistId,
         },
       })
+      // 统计写入成功后再判断是否自动下载「常听」歌曲。
+      // 不 await：下载调度不能拖慢统计上报，而且该函数内部全程吞异常
+      void maybeAutoDownloadFrequent(snapshot.track.track)
     } catch (e) {
       // 统计失败绝不能影响播放
       log.warn('record playback session failed:', e)

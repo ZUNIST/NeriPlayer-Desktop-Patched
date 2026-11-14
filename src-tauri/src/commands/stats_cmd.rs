@@ -260,9 +260,164 @@ pub async fn playback_stats_identity_key(
     Ok(manager::playback_stats_identity_key_pub(&track))
 }
 
+/// 自动下载「常听」歌曲的判定结果
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutoDownloadCandidate {
+    /// 是否够得上「常听」
+    pub qualified: bool,
+    /// 统计窗口内的播放次数
+    pub recent_plays: i32,
+    /// 统计窗口内的累计收听时长
+    pub recent_listen_ms: i64,
+    /// 平均听完整度（0~1），按「累计收听 /（次数 × 单曲时长）」估算
+    pub completion: f64,
+    /// 未达标原因，供前端提示与排查
+    pub reason: String,
+}
+
+/// 汇总某首歌在 `[start, ∞)` 窗口内的播放次数与累计收听时长。
+///
+/// 单独抽出来是为了能脱离 `AppState` 直接测：窗口边界与单位（毫秒时间戳）
+/// 是这段逻辑最容易写错的地方。
+fn recent_window_totals(
+    buckets: &[crate::sync::models::SyncPlaybackStatBucket],
+    identity_key: &str,
+    start: i64,
+) -> (i32, i64) {
+    let mut plays = 0i32;
+    let mut listen_ms = 0i64;
+    for bucket in buckets
+        .iter()
+        .filter(|bucket| bucket.identity_key == identity_key && bucket.day_start_at >= start)
+    {
+        plays = plays.saturating_add(bucket.play_count.max(0));
+        listen_ms = listen_ms.saturating_add(bucket.total_listen_ms.max(0));
+    }
+    (plays, listen_ms)
+}
+
+/// 平均听完整度：累计收听 ÷（次数 × 单曲时长），结果夹到 0~1。
+/// 单曲时长缺失或次数为 0 时返回 1.0（视为通过），避免因为缺元数据永远不下载。
+fn completion_ratio(listen_ms: i64, plays: i32, duration_ms: i64) -> f64 {
+    let expected = duration_ms.max(0) as f64 * f64::from(plays.max(0));
+    if expected <= 0.0 {
+        return 1.0;
+    }
+    (listen_ms.max(0) as f64 / expected).clamp(0.0, 1.0)
+}
+
+/// 判断某首歌在统计窗口内是否够得上「常听」，用于播放达标后自动下载。
+///
+/// 参考网易云「仅存常听歌曲」的意图（只留真正会反复听的，省空间），判定用两条：
+/// 窗口内重复收听次数、平均听完整度。「本地未下载」由调用方自行检查。
+///
+/// 不用全量累计次数是关键：那样会把几个月前循环过、现在早就不听的歌也当成常听。
+/// 窗口口径与统计页一致，按天 bucket 聚合，因此能表达「最近」而不只是「曾经」。
+#[tauri::command]
+pub async fn check_auto_download_candidate(
+    track: crate::state::TrackInfo,
+    window_days: i64,
+    min_plays: i32,
+    min_completion: f64,
+    state: State<'_, AppState>,
+) -> AppResult<AutoDownloadCandidate> {
+    // 身份键必须由后端派生，否则两端算法不一致会查不到统计
+    let identity_key = manager::playback_stats_identity_key_pub(&track);
+    let window_days = window_days.clamp(1, 365);
+    let start = now_ms() - window_days * 24 * 60 * 60 * 1000;
+    let store = state.stats.lock();
+
+    let (recent_plays, recent_listen_ms) =
+        recent_window_totals(&store.buckets, &identity_key, start);
+
+    let duration_ms = store
+        .stats
+        .iter()
+        .find(|stat| stat.identity_key == identity_key)
+        .map_or(0, |stat| stat.duration_ms.max(0));
+    let completion = completion_ratio(recent_listen_ms, recent_plays, duration_ms);
+
+    let (qualified, reason) = if recent_plays < min_plays {
+        (
+            false,
+            format!("plays in window {recent_plays} < required {min_plays}"),
+        )
+    } else if completion < min_completion {
+        (
+            false,
+            format!("completion {completion:.2} < required {min_completion:.2}"),
+        )
+    } else {
+        (true, String::new())
+    };
+
+    Ok(AutoDownloadCandidate {
+        qualified,
+        recent_plays,
+        recent_listen_ms,
+        completion,
+        reason,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn make_bucket(
+        day_start_at: i64,
+        identity_key: &str,
+        play_count: i32,
+        total_listen_ms: i64,
+    ) -> crate::sync::models::SyncPlaybackStatBucket {
+        crate::sync::models::SyncPlaybackStatBucket {
+            day_start_at,
+            identity_key: identity_key.to_string(),
+            play_count,
+            total_listen_ms,
+            ..Default::default()
+        }
+    }
+
+    /// 窗口外的天数、别的歌曲都不能计入，否则「常听」会被很久以前
+    /// 循环过的歌撑起来，正是这个功能要避免的。
+    #[test]
+    fn auto_download_window_excludes_days_and_tracks_outside_the_window() {
+        let day = 24 * 60 * 60 * 1000;
+        let now = 1_700_000_000_000i64;
+        let start = now - 10 * day;
+        let buckets = vec![
+            make_bucket(now - 9 * day, "track-a", 2, 300_000),
+            make_bucket(now - 1 * day, "track-a", 1, 180_000),
+            make_bucket(now - 11 * day, "track-a", 5, 900_000),
+            make_bucket(now - 2 * day, "track-b", 9, 900_000),
+        ];
+
+        let (plays, listen_ms) = recent_window_totals(&buckets, "track-a", start);
+
+        assert_eq!(plays, 3, "只累计窗口内的 2 + 1 次");
+        assert_eq!(listen_ms, 480_000, "只累计窗口内的 300s + 180s");
+    }
+
+    /// 完整度用来区分「真的在听」和「开播就切」，两种极端都要落在预期值上。
+    #[test]
+    fn completion_ratio_distinguishes_full_and_skipped_plays() {
+        // 3 次各听满 200s
+        assert!((completion_ratio(600_000, 3, 200_000) - 1.0).abs() < 1e-9);
+        // 3 次每次只听 20s，属于跳过
+        assert!((completion_ratio(60_000, 3, 200_000) - 0.1).abs() < 1e-9);
+        // 重复计入导致超过 100% 时夹到 1.0
+        assert!((completion_ratio(2_000_000, 3, 200_000) - 1.0).abs() < 1e-9);
+    }
+
+    /// 缺时长或次数为 0 时按通过处理：宁可多下一首，也不要因为
+    /// 早期记录没有时长就永远不下歌。
+    #[test]
+    fn completion_ratio_passes_when_metadata_is_missing() {
+        assert!((completion_ratio(60_000, 3, 0) - 1.0).abs() < 1e-9);
+        assert!((completion_ratio(0, 0, 200_000) - 1.0).abs() < 1e-9);
+    }
 
     /// 入参契约：track 必须是 toBackendTrack 产出的 snake_case 结构
     /// （TrackInfo 的 duration_ms/url 必填且无 camelCase 别名）

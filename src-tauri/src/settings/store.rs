@@ -12,6 +12,19 @@ pub const DEFAULT_DOWNLOAD_NAME_TEMPLATE: &str = "%title% - %artist% - %album% -
 pub const MIN_DOWNLOAD_PARALLELISM: i32 = 1;
 pub const MAX_DOWNLOAD_PARALLELISM: i32 = 8;
 pub const DEFAULT_DOWNLOAD_PARALLELISM: i32 = 6;
+
+// 自动下载「常听」歌曲：统计窗口与门槛。参考网易云「仅存常听歌曲」的思路，
+// 用「近期重复收听 + 听完整度」判定，而不是全量累计次数——半年以前循环过的歌
+// 不该被当成常听。
+pub const MIN_AUTO_DOWNLOAD_WINDOW_DAYS: i32 = 3;
+pub const MAX_AUTO_DOWNLOAD_WINDOW_DAYS: i32 = 90;
+pub const DEFAULT_AUTO_DOWNLOAD_WINDOW_DAYS: i32 = 10;
+pub const MIN_AUTO_DOWNLOAD_MIN_PLAYS: i32 = 1;
+pub const MAX_AUTO_DOWNLOAD_MIN_PLAYS: i32 = 50;
+pub const DEFAULT_AUTO_DOWNLOAD_MIN_PLAYS: i32 = 3;
+pub const MIN_AUTO_DOWNLOAD_DAILY_LIMIT: i32 = 1;
+pub const MAX_AUTO_DOWNLOAD_DAILY_LIMIT: i32 = 100;
+pub const DEFAULT_AUTO_DOWNLOAD_DAILY_LIMIT: i32 = 10;
 pub const MIN_MEDIA_CACHE_SIZE_MB: i32 = 256;
 pub const MAX_MEDIA_CACHE_SIZE_MB: i32 = 512 * 1024;
 
@@ -159,6 +172,14 @@ pub struct AppSettings {
     pub download_qq_music_quality: String,
     pub download_youtube_quality: String,
     pub download_bili_quality: String,
+    /// 播放达标时自动下载「常听」的网易云歌曲（默认关闭）
+    pub auto_download_frequent: bool,
+    #[serde(deserialize_with = "lenient_i32")]
+    pub auto_download_window_days: i32,
+    #[serde(deserialize_with = "lenient_i32")]
+    pub auto_download_min_plays: i32,
+    #[serde(deserialize_with = "lenient_i32")]
+    pub auto_download_daily_limit: i32,
     pub lt_server_url: String,
     pub lt_nickname: String,
     pub lt_allow_member_control: bool,
@@ -343,6 +364,10 @@ impl Default for AppSettings {
             download_qq_music_quality: "high".into(),
             download_youtube_quality: "high".into(),
             download_bili_quality: "high".into(),
+            auto_download_frequent: false,
+            auto_download_window_days: DEFAULT_AUTO_DOWNLOAD_WINDOW_DAYS,
+            auto_download_min_plays: DEFAULT_AUTO_DOWNLOAD_MIN_PLAYS,
+            auto_download_daily_limit: DEFAULT_AUTO_DOWNLOAD_DAILY_LIMIT,
             lt_server_url: "https://neriplayer.hancat.work".into(),
             lt_nickname: String::new(),
             lt_allow_member_control: true,
@@ -441,6 +466,16 @@ impl AppSettings {
         self.download_parallelism = self
             .download_parallelism
             .clamp(MIN_DOWNLOAD_PARALLELISM, MAX_DOWNLOAD_PARALLELISM);
+        self.auto_download_window_days = self.auto_download_window_days.clamp(
+            MIN_AUTO_DOWNLOAD_WINDOW_DAYS,
+            MAX_AUTO_DOWNLOAD_WINDOW_DAYS,
+        );
+        self.auto_download_min_plays = self
+            .auto_download_min_plays
+            .clamp(MIN_AUTO_DOWNLOAD_MIN_PLAYS, MAX_AUTO_DOWNLOAD_MIN_PLAYS);
+        self.auto_download_daily_limit = self
+            .auto_download_daily_limit
+            .clamp(MIN_AUTO_DOWNLOAD_DAILY_LIMIT, MAX_AUTO_DOWNLOAD_DAILY_LIMIT);
         self.volume = clamp_f32(self.volume, 0.0, 1.0, 1.0);
         self.playback_speed = (clamp_f32(self.playback_speed, 0.1, 4.0, 1.0) * 20.0).round() / 20.0;
         self.playback_pitch = (clamp_f32(self.playback_pitch, 0.25, 2.0, 1.0) * 20.0).round() / 20.0;
