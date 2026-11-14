@@ -154,7 +154,14 @@ POST /weapi/comment/checktoken/get
 - 染色生效时把 `--light-dim-strength` 置 0，避免与第 9 节的 8% 柔光遮罩叠加压暗。自定义背景图开启时由 `:not(.has-custom-bg)` 自动让位。
 - **新增设置必须同步 Rust**：`src-tauri/src/settings/store.rs` 的 `AppSettings` 结构体、`Default` 与 `normalize()` 都要加同名字段，否则 `save_settings` 会把新字段丢掉（结构体有 `#[serde(default)]`，旧配置文件能平滑升级）。
 
-## 11. 已知限制（非客户端可解）
+## 11. 播放页工具栏：睡眠定时器改为下载按钮
+
+- `NowPlaying.vue` 工具栏第 3 个按钮（原 `timer` 图标 + 倒计时 badge + 定时菜单）替换为「下载当前歌曲」：图标用已有的 `downloadActionIcon`（`download` / `downloading` / `cancel` / `refresh` / `error`），点击调用已有的 `handleDownloadAction()`，与「更多」面板里的下载项完全同一条逻辑（下载中可取消、已下载可重新下载）。
+- tooltip / aria 用 `downloadActionLabel`（下载 / 下载中 / 重新下载 / 取消）；`currentSource === 'local'` 或 `downloadActionDisabled` 时按钮禁用但位置保留，工具栏图标数量不变。
+- 顺带清掉组件内全部 sleep 死代码：`showSleepMenu` ref、`sleepOptions` / `handleSleepOption` / `formatSleepRemaining`、`closeToolbarPopovers` 与 `toggleToolbarPanel` 的 `'sleep'` 分支、Escape 关闭判定，以及 `.sleep-wrap` / `.sleep-popover` / `.sleep-option` / `.sleep-badge` 样式（组合选择器只删 sleep 部分，保留 speed 规则）。
+- **只改播放页这个入口**：`stores/player.ts` 的睡眠定时器逻辑未动，但播放页原本是 App 内唯一的可视入口，换掉后界面上不再有设置定时的地方；四个语言文件里的 `player.sleep_*` 文案也保留未删。
+
+## 12. 已知限制（非客户端可解）
 
 `/weapi/song/like` 对**数字专辑 / 独家首发**曲目返回：
 

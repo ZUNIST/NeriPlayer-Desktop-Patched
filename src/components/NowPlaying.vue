@@ -154,7 +154,6 @@ const canManageBiliVideoSkip = computed(() => !!player.currentTrack && !!resolve
 const showAudioFxPanel = ref(false)
 const showComments = ref(false)
 const commentTarget = computed(() => resolveCommentTarget(player.currentTrack))
-const showSleepMenu = ref(false)
 const showMoreSheet = ref(false)
 const showLtPanel = ref(false)
 const isTrackSwitchAnimating = ref(false)
@@ -734,34 +733,6 @@ async function toggleFavorite() {
   await likedSongs.toggleTrack(player.currentTrack)
 }
 
-// 睡眠定时器选项
-const sleepOptions = computed(() => [
-  { label: t('player.sleep_15'), value: 15 },
-  { label: t('player.sleep_30'), value: 30 },
-  { label: t('player.sleep_45'), value: 45 },
-  { label: t('player.sleep_60'), value: 60 },
-  { label: t('player.sleep_90'), value: 90 },
-  { label: t('player.sleep_end_of_track'), value: -1 },
-  { label: t('player.sleep_end_of_queue'), value: -2 },
-])
-
-function handleSleepOption(value: number) {
-  if (value === -1) {
-    player.startSleepTimerEndOfTrack()
-  } else if (value === -2) {
-    player.startSleepTimerEndOfQueue()
-  } else {
-    player.startSleepTimer(value)
-  }
-}
-
-function formatSleepRemaining(seconds: number): string {
-  if (seconds <= 0) return ''
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return m > 0 ? `${m}:${s.toString().padStart(2, '0')}` : `${s}s`
-}
-
 const nowPlayingTrackKey = computed(() => (
   playbackSessionTrackKey(
     player.hasPlaybackSession,
@@ -793,28 +764,24 @@ const controlsPulseClass = computed(() => (
 const isVisualBeatActive = computed(() => isTrackSwitchAnimating.value)
 const cardCoverRef = ref<HTMLDivElement>()
 
-function closeToolbarPopovers(except?: 'queue' | 'sleep' | 'volume' | 'audiofx' | 'add') {
+function closeToolbarPopovers(except?: 'queue' | 'volume' | 'audiofx' | 'add') {
   if (except !== 'queue') showQueue.value = false
-  if (except !== 'sleep') showSleepMenu.value = false
   if (except !== 'volume') showVolumeSlider.value = false
   if (except !== 'audiofx') showAudioFxPanel.value = false
   if (except !== 'add') showAddToPlaylist.value = false
 }
 
-function toggleToolbarPanel(panel: 'sleep' | 'volume' | 'audiofx' | 'add') {
-  const nextOpen = panel === 'sleep'
-    ? !showSleepMenu.value
-    : panel === 'volume'
-      ? !showVolumeSlider.value
-      : panel === 'audiofx'
-        ? !showAudioFxPanel.value
-        : !showAddToPlaylist.value
+function toggleToolbarPanel(panel: 'volume' | 'audiofx' | 'add') {
+  const nextOpen = panel === 'volume'
+    ? !showVolumeSlider.value
+    : panel === 'audiofx'
+      ? !showAudioFxPanel.value
+      : !showAddToPlaylist.value
 
   closeToolbarPopovers(nextOpen ? panel : undefined)
 
   if (!nextOpen) return
-  if (panel === 'sleep') showSleepMenu.value = true
-  else if (panel === 'volume') showVolumeSlider.value = true
+  if (panel === 'volume') showVolumeSlider.value = true
   else if (panel === 'audiofx') showAudioFxPanel.value = true
   else showAddToPlaylist.value = true
 }
@@ -938,7 +905,7 @@ function handleEscapeLayered(event: KeyboardEvent) {
     event.preventDefault()
     return
   }
-  if (showQueue.value || showSleepMenu.value || showVolumeSlider.value || showAudioFxPanel.value) {
+  if (showQueue.value || showVolumeSlider.value || showAudioFxPanel.value) {
     closeToolbarPopovers()
     event.preventDefault()
   }
@@ -2370,7 +2337,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
           </button>
         </div>
 
-        <!-- 工具栏（对齐 Android 底部：Favorite -> Queue -> Sleep -> Volume -> Speed -> Add） -->
+        <!-- 工具栏（Favorite -> Queue -> Download -> Volume -> Speed -> Add -> Comments） -->
         <div
           v-if="settings.showToolbarDock"
           class="np-toolbar"
@@ -2396,40 +2363,17 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
           <button class="tool-btn tool-btn--feedback" :title="t('player.queue')" :aria-label="t('player.queue')" @click="handleOpenQueue()">
             <span class="material-symbols-rounded">queue_music</span>
           </button>
-          <!-- 睡眠定时器 -->
-          <div class="sleep-wrap">
-            <button
-              class="tool-btn tool-btn--feedback"
-              :class="{ active: player.sleepTimerMode || showSleepMenu }"
-              :title="t('player.sleep_timer')"
-              :aria-label="t('player.sleep_timer')"
-              @click="triggerControlFeedbackPulse(); toggleToolbarPanel('sleep')"
-            >
-              <span class="material-symbols-rounded">timer</span>
-              <span v-if="player.sleepRemainingSeconds > 0" class="sleep-badge">
-                {{ formatSleepRemaining(player.sleepRemainingSeconds) }}
-              </span>
-            </button>
-            <Transition name="np-popover">
-            <div v-if="showSleepMenu" class="sleep-popover np-floating-popover np-floating-popover--menu">
-              <button
-                v-for="opt in sleepOptions"
-                :key="opt.value"
-                class="sleep-option"
-                @click="handleSleepOption(opt.value); showSleepMenu = false"
-              >
-                {{ opt.label }}
-              </button>
-              <button
-                v-if="player.sleepTimerMode"
-                class="sleep-option cancel"
-                @click="player.cancelSleepTimer(); showSleepMenu = false"
-              >
-                {{ t('player.sleep_off') }}
-              </button>
-            </div>
-            </Transition>
-          </div>
+          <!-- 下载当前歌曲（原睡眠定时器位置，复用「更多」面板的同一套下载逻辑） -->
+          <button
+            class="tool-btn tool-btn--feedback"
+            :class="{ active: isCurrentDownloading }"
+            :disabled="downloadActionDisabled || currentSource === 'local'"
+            :title="downloadActionLabel"
+            :aria-label="downloadActionLabel"
+            @click="triggerControlFeedbackPulse(); handleDownloadAction()"
+          >
+            <span class="material-symbols-rounded">{{ downloadActionIcon }}</span>
+          </button>
           <div class="volume-wrap">
             <button
               class="tool-btn tool-btn--feedback"
@@ -4609,12 +4553,8 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
 }
 
 /* 播放速度 / 音效面板 */
-.speed-wrap, .sleep-wrap {
+.speed-wrap {
   position: relative;
-}
-
-.sleep-wrap .tool-btn {
-  overflow: visible;
 }
 
 .speed-label {
@@ -4646,7 +4586,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
   &::-webkit-scrollbar { width: 0; height: 0; display: none; }
 }
 
-.speed-popover, .sleep-popover {
+.speed-popover {
   position: absolute;
   bottom: 46px;
   left: 50%;
@@ -4664,7 +4604,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
   min-width: 120px;
 }
 
-.speed-option, .sleep-option {
+.speed-option {
   padding: 8px 16px;
   border: none;
   background: transparent;
@@ -4692,26 +4632,6 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
     margin-top: 4px;
     padding-top: 10px;
   }
-}
-
-.sleep-badge {
-  position: absolute;
-  top: -2px;
-  right: -4px;
-  z-index: 2;
-  min-width: 22px;
-  height: 14px;
-  line-height: 14px;
-  font-size: 9px;
-  font-weight: 700;
-  background: var(--md-primary, #D0BCFF);
-  /* 定时器倒计时文字白色 */
-  color: #fff;
-  padding: 0 4px;
-  border-radius: 999px;
-  font-variant-numeric: tabular-nums;
-  text-align: center;
-  pointer-events: none;
 }
 
 /* 歌词空状态 */
