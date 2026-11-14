@@ -130,6 +130,10 @@ pub struct AppSettings {
     pub internationalization_enabled: bool,
     /// 探索页显示并记录搜索关键词（对齐 Android explore_search_history_enabled）
     pub explore_search_history_enabled: bool,
+    /// 播放时用播放页封面底色轻染浅色页面背景（默认关）
+    pub ambient_tint: bool,
+    /// 染色强度 0.04–0.32
+    pub ambient_tint_strength: f32,
     pub background_image_uri: String,
     pub background_image_blur: f32,
     pub background_image_alpha: f32,
@@ -317,6 +321,8 @@ impl Default for AppSettings {
             bypass_proxy: true,
             internationalization_enabled: false,
             explore_search_history_enabled: true,
+            ambient_tint: false,
+            ambient_tint_strength: 0.12,
             background_image_uri: String::new(),
             background_image_blur: 20.0,
             background_image_alpha: 0.3,
@@ -423,6 +429,7 @@ impl AppSettings {
         }
         self.cover_blur_amount = clamp_f32(self.cover_blur_amount, 0.0, 8.0, 1.5);
         self.cover_blur_darken = clamp_f32(self.cover_blur_darken, 0.0, 1.0, 0.2);
+        self.ambient_tint_strength = clamp_f32(self.ambient_tint_strength, 0.04, 0.32, 0.12);
         self.background_image_blur = clamp_f32(self.background_image_blur, 0.0, 100.0, 20.0);
         self.background_image_alpha = clamp_f32(self.background_image_alpha, 0.0, 1.0, 0.3);
         self.background_image_dim = clamp_f32(self.background_image_dim, 0.0, 0.8, 0.0);

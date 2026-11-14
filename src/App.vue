@@ -31,6 +31,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import AppBackgroundImage from '@/components/AppBackgroundImage.vue'
 import MiniPlayer from '@/components/MiniPlayer.vue'
 import NowPlaying from '@/components/NowPlaying.vue'
+import { refreshAmbientFromCover, clearAmbientBg } from '@/utils/ambientTint'
 import SideNav from '@/components/SideNav.vue'
 import AppToast from '@/components/AppToast.vue'
 import BiliVideoPartsDialog from '@/components/BiliVideoPartsDialog.vue'
@@ -259,6 +260,32 @@ watch(
     root.classList.toggle('has-custom-bg', active)
     root.classList.toggle('enhanced-blur', active && glass)
     root.style.setProperty('--glass-blur', `${radius}px`)
+  },
+  { immediate: true },
+)
+
+// 跟随封面染色：开关 / 播放会话 / 封面变化时刷新全局底色变量，并切换生效 class。
+// 取色在 ambientTint.ts 内独立完成（isDark=true），不依赖播放页是否打开。
+watch(
+  () => [
+    settingsStore.ambientTint,
+    player.hasPlaybackSession ? getTrackCoverUrl(player.currentTrack) : '',
+  ] as const,
+  ([enabled, cover]) => {
+    document.documentElement.classList.toggle('ambient-tint-on', enabled && player.hasPlaybackSession)
+    if (!enabled || !cover) {
+      clearAmbientBg()
+      return
+    }
+    void refreshAmbientFromCover(cover)
+  },
+  { immediate: true },
+)
+
+watch(
+  () => settingsStore.ambientTintStrength,
+  (strength) => {
+    document.documentElement.style.setProperty('--ambient-tint-strength', `${Math.round(strength * 100)}%`)
   },
   { immediate: true },
 )

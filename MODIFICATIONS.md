@@ -144,7 +144,17 @@ POST /weapi/comment/checktoken/get
 | 与动态取色关系 | `themeColor.ts` / `colorExtractor.ts` 的 `applyThemeVars` 在浅色下只写色彩令牌，surface 始终由 `.light-theme` 提供；本遮罩不碰这些变量，换封面 / 换主题色都不受影响 |
 | 取舍 | 文字与专辑封面一起被轻压（与 iOS 行为一致）；播放页深色玻璃浮层也会略暗，8% 以内不明显；两个独立透明窗口不受影响 |
 
-## 10. 已知限制（非客户端可解）
+## 10. 播放时跟随封面的淡色染色（可一键回退）
+
+- 设置项位于「设置 → 背景」顶部：`跟随封面染色` 开关（**默认关闭**）+ 开启后出现的 `染色强度` 滑块（4%–32%，默认 12%）。关掉开关即完全回到 `v1.3.0` 之后的纯白浅色，柔光遮罩恢复 8%。
+- 颜色来源：`src/utils/ambientTint.ts` 独立从当前封面取色，用 `extractPalette(data, 16, true)`（与播放页一致，`isDark=true`）拿到 `accentBg`，再走 `resolveNowPlayingAccentBg()` 压暗。`NowPlaying.vue` 的 `accentBgStyle` 改为调用同一函数，两处颜色严格一致。
+- **不要依赖 `NowPlaying.vue` 取色**：它是 `v-if="isNowPlayingOpen"`，播放页收起后组件卸载，首页拿不到颜色。App.vue 常驻 watch 负责刷新 `:root` 的 `--np-ambient-bg`，切歌自动更新。
+- **也不要用 `colorExtractor.ts` 的 `accentBg`**：浅色模式下它传 `isDark=false`，`computeAccentBg` 会给出近乎白色的 `targetL=0.90`，和播放页深底不是一回事。
+- CSS 生效条件：`html.light-theme.ambient-tint-on.ambient-tint-ready:not(.has-custom-bg)`（`ready` 只在封面取色成功后添加，失败时自动回白并保留 8% 遮罩，不会变成「更白」），另排除 `desktop-lyrics-page` / `tray-popup-page` 两个透明窗口；只覆盖 `--md-background` / `--md-surface` / `--md-surface-dim`，卡片容器保持白色以留层次；`--np-ambient-bg` 缺失时 `color-mix` 回退成 `#FCF8FD`，不会铺出脏色块。
+- 染色生效时把 `--light-dim-strength` 置 0，避免与第 9 节的 8% 柔光遮罩叠加压暗。自定义背景图开启时由 `:not(.has-custom-bg)` 自动让位。
+- **新增设置必须同步 Rust**：`src-tauri/src/settings/store.rs` 的 `AppSettings` 结构体、`Default` 与 `normalize()` 都要加同名字段，否则 `save_settings` 会把新字段丢掉（结构体有 `#[serde(default)]`，旧配置文件能平滑升级）。
+
+## 11. 已知限制（非客户端可解）
 
 `/weapi/song/like` 对**数字专辑 / 独家首发**曲目返回：
 

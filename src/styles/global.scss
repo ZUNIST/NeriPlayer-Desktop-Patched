@@ -418,6 +418,17 @@ html.light-theme:not(.desktop-lyrics-page):not(.tray-popup-page) body::after {
   opacity: 1;
 }
 
+/* 播放时跟随封面的淡色染色：只改浅色主底，卡片容器仍保持白色以留层次。
+   生效条件由 App.vue 的 ambient-tint-on 控制；--np-ambient-bg 来自封面取色，
+   缺失时回退成白，不会出现脏色块。自定义背景图与两个透明窗口一律排除，
+   染色生效时同时关掉柔光遮罩，避免两次压暗叠加。 */
+html.light-theme.ambient-tint-on.ambient-tint-ready:not(.has-custom-bg):not(.desktop-lyrics-page):not(.tray-popup-page) {
+  --light-dim-strength: 0;
+  --md-background: color-mix(in srgb, var(--np-ambient-bg, #FCF8FD) var(--ambient-tint-strength, 12%), #FCF8FD);
+  --md-surface: color-mix(in srgb, var(--np-ambient-bg, #FCF8FD) var(--ambient-tint-strength, 12%), #FCF8FD);
+  --md-surface-dim: color-mix(in srgb, var(--np-ambient-bg, #FCF8FD) var(--ambient-tint-strength, 12%), #FCF8FD);
+}
+
 /* View Transition 圆形扩散动画 */
 ::view-transition-old(root),
 ::view-transition-new(root) {

@@ -100,6 +100,10 @@ export interface AppSettings {
   bypassProxy: boolean
   internationalizationEnabled: boolean
   exploreSearchHistoryEnabled: boolean
+  /** 播放时用播放页封面底色轻染浅色页面背景（默认关，关掉即回到纯白） */
+  ambientTint: boolean
+  /** 染色强度 0.04–0.32，默认 0.12 */
+  ambientTintStrength: number
   backgroundImageUri: string
   backgroundImageBlur: number
   backgroundImageAlpha: number
@@ -262,6 +266,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   bypassProxy: true,
   internationalizationEnabled: false,
   exploreSearchHistoryEnabled: true,
+  ambientTint: false,
+  ambientTintStrength: 0.12,
   backgroundImageUri: '',
   backgroundImageBlur: 20,
   backgroundImageAlpha: 0.3,
@@ -535,6 +541,7 @@ function normalizeSnapshot(input: unknown): AppSettings {
   result.amllTtmlOffset = normalizeLyricDefaultOffset(result.amllTtmlOffset, DEFAULT_SETTINGS.amllTtmlOffset)
   result.coverBlurAmount = clamp(result.coverBlurAmount, 0, MAX_COVER_BLUR_AMOUNT)
   result.coverBlurDarken = clamp(result.coverBlurDarken, 0, 1)
+  result.ambientTintStrength = clamp(result.ambientTintStrength, 0.04, 0.32)
   result.backgroundImageBlur = clamp(result.backgroundImageBlur, 0, 100)
   result.backgroundImageAlpha = clamp(result.backgroundImageAlpha, 0, 1)
   result.backgroundImageDim = clamp(result.backgroundImageDim, 0, 0.8)
@@ -717,6 +724,8 @@ export const useSettingsStore = defineStore('settings', () => {
   const bypassProxy = ref(initial.bypassProxy)
   const internationalizationEnabled = ref(initial.internationalizationEnabled)
   const exploreSearchHistoryEnabled = ref(initial.exploreSearchHistoryEnabled)
+  const ambientTint = ref(initial.ambientTint)
+  const ambientTintStrength = ref(initial.ambientTintStrength)
   const backgroundImageUri = ref(initial.backgroundImageUri)
   const backgroundImageBlur = ref(initial.backgroundImageBlur)
   const backgroundImageAlpha = ref(initial.backgroundImageAlpha)
@@ -772,6 +781,7 @@ export const useSettingsStore = defineStore('settings', () => {
     coverBlurAmount, coverBlurDarken, neteaseQuality, qqMusicQuality,
     youtubeQuality, biliQuality, bypassProxy, internationalizationEnabled, exploreSearchHistoryEnabled,
     youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
+    ambientTint, ambientTintStrength,
     backgroundImageUri, backgroundImageBlur, backgroundImageAlpha, backgroundImageDim, enhancedAdvancedBlur,
     enhancedAdvancedBlurRadius, devModeEnabled,
     logToFile, logLevel,
@@ -871,7 +881,7 @@ export const useSettingsStore = defineStore('settings', () => {
     colorMode, audioReactive, lowPerformanceMode, coverBlurBg, coverBlurAmount, coverBlurDarken,
     neteaseQuality, qqMusicQuality, youtubeQuality, biliQuality, bypassProxy,
     youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
-    internationalizationEnabled, exploreSearchHistoryEnabled, backgroundImageUri, backgroundImageBlur,
+    internationalizationEnabled, exploreSearchHistoryEnabled, ambientTint, ambientTintStrength, backgroundImageUri, backgroundImageBlur,
     backgroundImageAlpha, backgroundImageDim, enhancedAdvancedBlur, enhancedAdvancedBlurRadius,
     devModeEnabled, logToFile, logLevel, maxCacheSize, downloadNameTemplate,
     downloadDir, ltServerUrl, ltNickname, ltAllowMemberControl,

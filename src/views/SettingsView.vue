@@ -126,6 +126,7 @@ const {
   neteaseQuality, youtubeQuality, biliQuality,
   youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
   bypassProxy, internationalizationEnabled, exploreSearchHistoryEnabled,
+  ambientTint, ambientTintStrength,
   backgroundImageUri, backgroundImageBlur, backgroundImageAlpha, backgroundImageDim,
   enhancedAdvancedBlur, enhancedAdvancedBlurRadius,
   devModeEnabled, logToFile, logLevel,
@@ -1888,6 +1889,33 @@ useEscapeClose(
 
     <!-- 背景 -->
         <div v-show="activeSettingsSection === 'background'" class="settings-section-panel" data-section="background">
+      <!-- 跟随封面染色（关掉即回到纯白） -->
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">format_color_fill</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.ambient_tint') }}</div>
+          <div class="setting-desc">{{ t('settings.ambient_tint_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="ambientTint" /><span class="track"><span class="thumb"><span v-if="ambientTint" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+      <div v-if="ambientTint" class="setting-card sub-card">
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.ambient_tint_strength') }}</div>
+          <EditableRangeValue
+            v-model="ambientTintStrength"
+            class="setting-desc"
+            :min="0.04"
+            :max="0.32"
+            :step="0.02"
+            :inputScale="100"
+            :display-value="`${(ambientTintStrength * 100).toFixed(0)}%`"
+            input-suffix="%"
+            :aria-label="t('settings.ambient_tint_strength')"
+          />
+        </div>
+        <input type="range" class="m3-slider" v-model.number="ambientTintStrength" min="0.04" max="0.32" step="0.02" />
+      </div>
+
       <!-- 自定义背景图 -->
       <div class="setting-card">
         <div class="setting-icon-wrap"><span class="material-symbols-rounded">wallpaper</span></div>

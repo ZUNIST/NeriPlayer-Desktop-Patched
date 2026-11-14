@@ -25,6 +25,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { invoke, isTauri } from '@tauri-apps/api/core'
 import { extractPalette, type PaletteResult } from '@/utils/paletteExtractor'
+import { resolveNowPlayingAccentBg } from '@/utils/ambientTint'
 import { shouldShowDynamicBackground } from '@/utils/nowPlayingBackground'
 import {
   normalizeCoverUrlForDisplay,
@@ -2013,17 +2014,8 @@ const accentBgStyle = computed(() => {
   if (!player.hasPlaybackSession) return { background: 'rgb(18, 18, 18)' }
   const bg = paletteResult.value?.accentBg
   if (!bg) return { background: 'rgb(18, 18, 18)' }
-  const [r, g, b] = bg
-  const luma = (r * 0.299 + g * 0.587 + b * 0.114) / 255
-  if (luma <= 0.34) {
-    return { background: `rgb(${r}, ${g}, ${b})` }
-  }
-  // 过亮时向中性深色混合，保留色相
-  const t = Math.min(1, (luma - 0.34) / 0.4)
-  const mix = 0.35 + t * 0.45
-  return {
-    background: `rgb(${Math.round(r * (1 - mix) + 18 * mix)}, ${Math.round(g * (1 - mix) + 18 * mix)}, ${Math.round(b * (1 - mix) + 18 * mix)})`,
-  }
+  // 与首页染色共用同一算法，保证播放页和首页是同一个底色
+  return { background: resolveNowPlayingAccentBg(bg) }
 })
 const shouldRenderDynamicBackground = computed(() => shouldShowDynamicBackground(
   player.hasPlaybackSession,
