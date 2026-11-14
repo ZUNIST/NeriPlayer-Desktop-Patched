@@ -43,6 +43,9 @@ export default defineConfig({
     entries: ['index.html'],
   },
   build: {
+    // 关闭构建前的自动清空：某些环境对批量删除有硬性拦截（>50 文件），
+    // 增量覆盖同名文件即可，陈旧的 hash 文件由手动清理处理。
+    emptyOutDir: false,
     rollupOptions: {
       output: {
         manualChunks(id) {

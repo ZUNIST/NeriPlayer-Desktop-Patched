@@ -16,6 +16,7 @@ import {
 } from '@/utils/contextMenu'
 import { formatTrackDuration as formatDuration } from '@/utils/timeFormat'
 
+const props = defineProps<{ overlay?: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 const player = usePlayerStore()
 const listenTogether = useListenTogetherStore()
@@ -309,7 +310,7 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
 </script>
 
 <template>
-  <div class="queue-overlay" @click.self="emit('close')">
+  <div class="queue-overlay" :class="{ 'queue-overlay--inline': overlay }" @click.self="emit('close')">
     <div class="queue-panel">
       <header class="queue-header">
         <h3>{{ t('player.queue') }}</h3>
@@ -429,6 +430,69 @@ function handleQueueContextMenuClick(item: ContextMenuActionItem) {
   display: flex;
   flex-direction: column;
   box-shadow: -4px 0 24px rgba(0, 0, 0, 0.3);
+}
+
+/* 覆盖模式：与评论区同一套玻璃规格，靠右浮在歌词区上方 */
+.queue-overlay--inline {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: transparent;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+
+  .queue-panel {
+    width: 60%;
+    max-width: none;
+    height: calc(100% - 12px);
+    margin-right: 2px;
+    border-radius: 18px;
+    /* 与播放页同底色：只做暗化 + 轻度磨砂，不加白色蒙层。
+       blur 保持较小，底下的动态着色器才透得出来（72px 会把色彩流动平均掉）。 */
+    background: rgb(0 0 0 / 0.24);
+    backdrop-filter: blur(20px) saturate(150%);
+    border: 1px solid rgb(255 255 255 / 0.12);
+    /* 关键：面板根要显式给亮色，否则文字继承全局的深色（浅色主题下变黑字） */
+    color: #ffffff;
+    box-shadow: none;
+    overflow: hidden;
+
+    --md-on-surface: #ffffff;
+    --md-on-surface-variant: rgb(255 255 255 / 0.72);
+    --md-surface: rgb(255 255 255 / 0.08);
+    --md-surface-container: rgb(255 255 255 / 0.06);
+    --md-surface-container-high: rgb(255 255 255 / 0.11);
+    --md-outline-variant: rgb(255 255 255 / 0.14);
+
+    /* 当前播放项：只保留浅色底，不再显示最左侧的强调色条 */
+    .queue-item.active {
+      background: rgb(255 255 255 / 0.1);
+    }
+
+    /* 正在播放的歌名不用主题色（浅色主题下常常糊在底色里），改用更亮的白 + 加粗 */
+    .queue-item .qi-title { color: rgb(255 255 255 / 0.9); }
+    .queue-item.active .qi-title {
+      color: #ffffff;
+      font-weight: 600;
+      text-shadow: 0 0 10px rgb(255 255 255 / 0.35);
+    }
+
+    /* 左侧的播放音频图标同样固定为白色，不跟随主题色 */
+    .queue-item .equalizer-bars .bar { background: #ffffff; }
+    .queue-item .qi-playing { color: #ffffff; }
+  }
+}
+
+/* 覆盖模式的进场：从下往上浮，与评论区一致 */
+.queue-overlay--inline.queue-sheet-enter-from,
+.queue-overlay--inline.queue-sheet-leave-to {
+  .queue-panel { transform: translateY(24px); opacity: 0; }
+}
+
+.queue-overlay--inline.queue-sheet-enter-active .queue-panel,
+.queue-overlay--inline.queue-sheet-leave-active .queue-panel {
+  transition: transform 260ms var(--ease-emphasized-decel), opacity 200ms ease;
 }
 
 /* 由父级 <Transition name="queue-sheet"> 驱动：开合都是 transition，半路反向会从当前位置收回 */

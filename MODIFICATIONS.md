@@ -116,7 +116,21 @@ POST /weapi/comment/checktoken/get
 | 侧边栏 | 图标组垂直居中并上移约一个图标高度 |
 | 收藏提示 | 失败时透出业务码；`524`/`401` 分流为「该歌曲受版权限制，暂不支持云端同步」 |
 
-## 8. 已知限制（非客户端可解）
+## 8. 播放页评论 / 队列浮层
+
+把评论与播放队列从侧边栏改成播放页右侧的就地浮层，覆盖歌词区，视觉上沿用播放页同一套深色玻璃。
+
+| 项 | 实现 |
+|---|---|
+| 就地渲染 | `NowPlaying.vue` 的 `.np-right` 作为定位基准，两个面板直接渲染；原先 `Teleport to body` 的目标未挂载时会静默失败（按钮有动画、面板不出现） |
+| 评论玻璃 | 宽 60%、高 `calc(100% - 12px)`、右侧留 2px、圆角 18px、`blur(72px) saturate(180%) brightness(1.22)`；发评论区去掉底色 |
+| 队列玻璃 | 与播放页同系 `rgb(0 0 0 / .24)` + `blur(20px) saturate(150%)`，尺寸/圆角/缝隙与评论区一致 |
+| 进场动画 | 从下往上浮 24px + opacity，用 `<Transition>` |
+| 开关 | 面板打开时再次点击同一按钮即关闭（评论、队列各自独立） |
+| 文字可读性 | 面板根显式 `color: #fff` 并覆盖 `--md-on-surface*`；否则浅色主题下会继承全局黑字 |
+| 当前播放项 | 歌名由主题色改纯白加粗、左侧音频均衡器条改纯白、去掉最左侧竖色条 |
+
+## 9. 已知限制（非客户端可解）
 
 `/weapi/song/like` 对**数字专辑 / 独家首发**曲目返回：
 
@@ -140,7 +154,7 @@ npx tauri build --no-bundle --config tauri.buildonly.json
 
 **不要用 `cargo build` 替代**——它不会嵌入前端资源，产物打开是空白页。判断构建是否成功看 `.rdata` 段是否约 39 MB。
 
-### 构建时的六个坑
+### 构建时的坑
 
 1. **必须用 MSVC 工具链**。`x86_64-pc-windows-gnu` 能编过，但链接时报
    `ld.exe: .rsrc merge failure: multiple non-default manifests`，产物嵌了两个同 ID 的 manifest，
@@ -151,8 +165,9 @@ npx tauri build --no-bundle --config tauri.buildonly.json
    正好和缺失的资源量抵消，容易误以为成功。
 
 3. **Vite 清 dist 会被批量删除保护拦截**（`SAFE_DELETE_BULK_CONFIRM_REQUIRED`，阈值 50 文件）。
-   做法：`mv dist dist_prev` 让构建重建，最后用 Python `shutil.rmtree` 清理
-   （node 的 shim 只拦 node 进程）。
+   正确做法是先向使用者请求授权再清理，不要换命令或换语言去绕开拦截。
+   本地 `vite.config.ts` 暂以 `build.emptyOutDir: false` 规避清空；代价是旧 hash 文件累积在
+   `dist/assets/`，Tauri 会把它们一并嵌进 exe，体积逐次变大，授权后定期清一次即可。
 
 4. **浅克隆推不上去**。`git clone --depth 1` 后直接 `git push` 会报
    `remote unpack failed: index-pack failed` / `did not receive expected object`。
@@ -162,6 +177,10 @@ npx tauri build --no-bundle --config tauri.buildonly.json
    处理：终止这两个进程后重跑，增量通常 2~3 分钟。
 
 6. **部署报 `Device or resource busy`**：进程句柄未释放，等 5~7 秒再覆盖。
+
+7. **`cargo` 不在 PATH**：`npx tauri build` 报
+   `failed to run 'cargo metadata' ... program not found`（Git Bash 会话常见）。
+   先 `export PATH="/c/Users/zuni/.cargo/bin:$PATH"` 再构建。
 
 ### 补丁脚本
 

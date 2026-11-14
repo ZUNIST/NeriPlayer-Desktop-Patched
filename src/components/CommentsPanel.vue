@@ -13,7 +13,13 @@ import BilibiliCoverImage from '@/components/BilibiliCoverImage.vue'
 import ContextMenu from '@/components/ui/ContextMenu.vue'
 
 /// 评论（对齐 Android CommentSheet）：网易云歌曲评论与 B 站视频评论，YouTube / 本地没有评论入口
-const props = defineProps<{ open: boolean; track: TrackInfo | null; albumId?: number | null }>()
+const props = defineProps<{
+  open: boolean
+  track: TrackInfo | null
+  albumId?: number | null
+  /** 覆盖模式：贴在播放页歌词区上，不挤压布局、不铺全屏遮罩 */
+  overlay?: boolean
+}>()
 const emit = defineEmits<{ 'update:open': [open: boolean] }>()
 const { t, locale } = useI18n()
 const auth = useAuthStore()
@@ -592,9 +598,14 @@ function enterDelay(index: number): string {
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport :to="overlay ? '#np-comment-stage' : 'body'" :disabled="overlay">
     <Transition name="comments-sheet">
-      <div v-if="open" class="comments-overlay" @click.self="emit('update:open', false)">
+      <div
+        v-if="open"
+        class="comments-overlay"
+        :class="{ 'comments-overlay--inline': overlay }"
+        @click.self="emit('update:open', false)"
+      >
         <aside class="comments-panel" role="dialog" :aria-label="t('player.comments')">
           <header class="comments-header">
             <div class="comments-heading">
@@ -921,6 +932,62 @@ function enterDelay(index: number): string {
   background: var(--bg-solid-container, var(--md-surface-container));
   color: var(--md-on-surface);
   box-shadow: -4px 0 24px rgb(0 0 0 / 0.3);
+}
+
+/* 覆盖模式：靠右浮在歌词区上方，占 60% 宽，左侧留出歌词 */
+.comments-overlay--inline {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  background: transparent;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+
+  .comments-panel {
+    width: 60%;
+    max-width: none;
+    height: calc(100% - 12px);
+    margin-right: 2px;
+    padding-top: 0;
+    border-radius: 18px;
+    /* 透明玻璃：底色几乎不可见，靠模糊 + 细边勾勒轮廓 */
+    background: rgb(255 255 255 / 0.07);
+    backdrop-filter: blur(72px) saturate(180%) brightness(1.22);
+    border: 1px solid rgb(255 255 255 / 0.16);
+    box-shadow: none;
+    overflow: hidden;
+
+    /* 局部覆盖颜色变量：只影响这个面板，不污染深色主题的其他区域 */
+    --md-on-surface: #1c1b1f;
+    --md-on-surface-variant: #3f3b45;
+    --md-surface: rgb(255 255 255 / 0.1);
+    --md-surface-container: rgb(255 255 255 / 0.12);
+    --md-surface-container-high: rgb(255 255 255 / 0.16);
+    --md-outline-variant: rgb(255 255 255 / 0.16);
+
+    /* 发评论区不再自成一块底色，与列表连成一体 */
+    .comments-composer {
+      background: transparent;
+      border-top: 1px solid rgb(255 255 255 / 0.12);
+    }
+
+    /* 卡片在极透的底上靠细边而不是填充色区分 */
+    .comment {
+      border: 1px solid rgb(255 255 255 / 0.14);
+    }
+  }
+}
+
+/* 覆盖模式的进场：从下往上浮，而不是从右侧滑入 */
+.comments-overlay--inline.comments-sheet-enter-from,
+.comments-overlay--inline.comments-sheet-leave-to {
+  .comments-panel { transform: translateY(24px); opacity: 0; }
+}
+
+.comments-overlay--inline.comments-sheet-enter-active .comments-panel,
+.comments-overlay--inline.comments-sheet-leave-active .comments-panel {
+  transition: transform 260ms var(--ease-emphasized-decel), opacity 200ms ease;
 }
 
 /* 开合都走 transition：半路关掉会从当前位置反向收回，不会闪现 */

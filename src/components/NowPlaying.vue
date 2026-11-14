@@ -857,7 +857,7 @@ function handleToggleRepeatMode() {
 function handleOpenQueue() {
   triggerControlFeedbackPulse('misc')
   closeToolbarPopovers('queue')
-  showQueue.value = true
+  showQueue.value = !showQueue.value
 }
 
 type CoverSnapshot = {
@@ -2508,7 +2508,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
             :class="{ active: showComments }"
             :title="t('player.comments')"
             :aria-label="t('player.comments')"
-            @click="triggerControlFeedbackPulse(); closeToolbarPopovers(); showComments = true"
+            @click="triggerControlFeedbackPulse(); closeToolbarPopovers(); showComments = !showComments"
           >
             <span class="material-symbols-rounded">chat_bubble</span>
           </button>
@@ -2517,7 +2517,11 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
       </section>
 
       <!-- 右侧歌词 -->
-      <section class="np-right" :class="{ 'np-right--switching': isTrackSwitchAnimating, 'np-right--beat-active': isVisualBeatActive }">
+      <section
+        id="np-comment-stage"
+        class="np-right"
+        :class="{ 'np-right--switching': isTrackSwitchAnimating, 'np-right--beat-active': isVisualBeatActive }"
+      >
         <LyricsView
           v-if="displayLyrics.length > 0"
           :lyrics="displayLyrics"
@@ -2537,18 +2541,15 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
           <span class="material-symbols-rounded" style="font-size: 36px">lyrics</span>
           <p>{{ t('player.no_lyrics') }}</p>
         </div>
+        <CommentsPanel v-model:open="showComments" :track="player.currentTrack" overlay />
+        <Transition name="queue-sheet">
+          <QueuePanel v-if="player.hasPlaybackSession && showQueue" overlay @close="showQueue = false" />
+        </Transition>
       </section>
     </div>
 
-    <!-- 播放队列面板（Teleport 到 body，避免被全屏页开合动画的 transform 包含块限制） -->
-    <Teleport to="body">
-      <Transition name="queue-sheet">
-        <QueuePanel v-if="player.hasPlaybackSession && showQueue" @close="showQueue = false" />
-      </Transition>
-    </Teleport>
     <AddToPlaylistDialog v-if="player.hasPlaybackSession" v-model:open="showAddToPlaylist" :track="player.currentTrack" />
     <BiliVideoSkipDialog v-model:open="showBiliVideoSkip" :track="biliVideoSkipTrack" />
-    <CommentsPanel v-model:open="showComments" :track="player.currentTrack" />
     <ListenTogetherPanel v-if="player.hasPlaybackSession" v-model:open="showLtPanel" />
 
     <!-- 更多选项面板（对齐 Android MoreOptionsSheet） -->
@@ -3548,6 +3549,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
 .np-right {
   flex: 1;
   min-width: 0;
+  position: relative;
   background: transparent;
   display: flex;
   align-items: stretch;
