@@ -524,11 +524,11 @@ defineExpose({
 .mp-body {
   display: flex;
   align-items: center;
-  /* 底栏背景已通栏到窗口左边缘，但内容仍要让开 80px 的侧栏，
-     否则封面会贴到窗口最左边，与上方内容的左边距（侧栏 80 + 16）错位。
-     左 96 = 侧栏宽度 80 + 常规内边距 16；这样封面与内容区左对齐，
-     三栏的居中位置也与改前的布局完全一致。 */
-  padding: 0 16px 0 calc(80px + 16px);
+  /* 底栏已通栏到窗口两边，内容也跟着铺满整行：
+     左右统一 16px，封面因此落在窗口左边缘、右侧按钮贴到右边缘，
+     与上方内容列（侧栏 80 + 16）不再对齐是刻意的——
+     这是一条独立的通栏播放条，不隶属内容区。 */
+  padding: 0 16px;
   height: 71px; // 76 - 5px 进度条
   gap: 16px;
   transition: transform 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease;
