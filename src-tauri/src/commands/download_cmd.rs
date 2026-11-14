@@ -8,7 +8,7 @@ use crate::state::AppState;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -152,6 +152,63 @@ async fn refresh_youtube_download_source(
         .unwrap_or_else(|| AppError::NotFound("No supported YouTube download source".into())))
 }
 
+/// 从下载任务的 trackId / album 还原 B 站播放标识。
+/// trackId 是 `bilibili:<bvid>` 或 `bilibili:<avid>`；前端把 album 写成 `Bilibili|<cid>|<bvid>`，
+/// 多 P 视频必须带上 cid，否则会重新解析到第一 P。
+fn bili_download_target(track_id: &str, album: &str) -> Option<(String, Option<u64>, Option<u64>)> {
+    let id = track_id.strip_prefix("bilibili:")?.trim();
+    if id.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = album
+        .strip_prefix("Bilibili|")
+        .unwrap_or("")
+        .split('|')
+        .collect();
+    let cid = parts.first().and_then(|value| value.parse::<u64>().ok());
+    let bvid_from_album = parts
+        .get(1)
+        .filter(|value| value.starts_with("BV"))
+        .map(|value| (*value).to_string());
+    let (bvid, avid) = if id.bytes().all(|byte| byte.is_ascii_digit()) {
+        (bvid_from_album.unwrap_or_default(), id.parse::<u64>().ok())
+    } else {
+        (id.to_string(), None)
+    };
+    Some((bvid, avid, cid))
+}
+
+/// B 站直链带时间戳签名，403/410 之后重试同一个 URL 永远失败。
+/// 重新走 playurl 拿新签名，并依次轮换 backup CDN：某个 CDN 被风控时其它节点通常仍可用。
+async fn refresh_bilibili_download_source(
+    app: AppHandle,
+    bvid: String,
+    avid: Option<u64>,
+    cid: Option<u64>,
+    quality: String,
+    rotation: Arc<AtomicUsize>,
+) -> AppResult<recovery::Source> {
+    let client = app.state::<AppState>().bilibili();
+    let (real_bvid, real_cid) =
+        super::settings_cmd::resolve_bili_playback_target(&client, bvid, avid, cid).await?;
+    let streams = client.get_audio_url(&real_bvid, real_cid).await?;
+    let best = super::settings_cmd::select_bili_audio_stream(streams, Some(&quality))
+        .ok_or_else(|| AppError::Api("No audio stream found".into()))?;
+    let index = rotation.fetch_add(1, Ordering::Relaxed);
+    let fallback = best.url.clone();
+    let url = best
+        .candidate_urls
+        .get(index % best.candidate_urls.len().max(1))
+        .cloned()
+        .unwrap_or(fallback);
+    Ok(recovery::Source {
+        url,
+        stream_type: YtStreamType::Direct,
+        content_length: None,
+        content_md5: None,
+    })
+}
+
 /// 文件名 stem 的最大字节数（UTF-8）：为扩展名与 " (n)" 后缀留余量，
 /// 避免超出各文件系统 255 字节单文件名 / Windows MAX_PATH 限制
 const MAX_FILENAME_STEM_BYTES: usize = 180;
@@ -279,6 +336,50 @@ fn collapse_empty_name_separators(s: &str) -> String {
         .trim()
         .to_string()
 }
+/// 按 ISO BMFF box 链认出分片 MP4（fMP4）的开头。
+///
+/// 普通 m4a 是 ftyp+moov+mdat；B 站 DASH 的 .m4s 常以 styp+sidx+moof+mdat 开头，
+/// 初始化段甚至可能被 CDN 单独切片、文件直接从 moof 开始。只从偏移 0 顺序扫少量 box，
+/// 不跟随 mdat 的大尺寸，避免把任意二进制误判成音频。
+fn is_fragmented_mp4_head(head: &[u8]) -> bool {
+    let mut offset = 0usize;
+    for _ in 0..8 {
+        if offset + 8 > head.len() {
+            return false;
+        }
+        let size = u32::from_be_bytes([
+            head[offset],
+            head[offset + 1],
+            head[offset + 2],
+            head[offset + 3],
+        ]) as usize;
+        let kind = [
+            head[offset + 4],
+            head[offset + 5],
+            head[offset + 6],
+            head[offset + 7],
+        ];
+        if kind == *b"styp"
+            || kind == *b"sidx"
+            || kind == *b"moof"
+            || kind == *b"mdat"
+        {
+            return true;
+        }
+        if !(kind == *b"ftyp"
+            || kind == *b"moov"
+            || kind == *b"free"
+            || kind == *b"skip"
+            || kind == *b"wide")
+            || size < 8
+        {
+            return false;
+        }
+        offset = offset.saturating_add(size);
+    }
+    false
+}
+
 /// 按文件头认出下载下来的音频容器，返回对应扩展名；认不出返回 None
 ///
 /// CDN 的 Content-Type 不可靠：网易云把 FLAC 标成 audio/mpeg，按它命名会把 FLAC 存成 .mp3。
@@ -313,7 +414,9 @@ fn downloaded_audio_extension(path: &std::path::Path) -> Option<&'static str> {
     };
     if starts(b"fLaC") {
         Some("flac")
-    } else if at(4, b"ftyp") {
+    } else if at(4, b"ftyp") || is_fragmented_mp4_head(head) {
+        // B 站 DASH 的 .m4s 可能以 styp/sidx/moof 起头（初始化段被 CDN 单独切片），
+        // 只认 ftyp 会把它当成 Content-Type 默认的 .mp3，后续标签与播放全错
         Some("m4a")
     } else if starts(b"OggS") {
         Some(if head.windows(8).any(|window| window == b"OpusHead") { "opus" } else { "ogg" })
@@ -723,12 +826,16 @@ fn scan_download_duration(path: &std::path::Path, cancelled: &AtomicBool) -> App
         .saturating_add((time.frac * 1000.0).round() as u64))
 }
 
+/// `relaxed_bilibili`：B 站 DASH 的 .m4s 是分片 MP4，头部常没有最终时长，
+/// 来源给的是「视频时长」而非音轨时长，且 lofty 对无初始化段的分片读不出标签容器。
+/// 对这类源只要求解码器确实能解出音频，不再用严格时长/标签校验把下载判死。
 fn validate_download_audio(
     path: &std::path::Path,
     expected_length: Option<u64>,
     expected_md5: Option<&str>,
     expected_duration_ms: u64,
     cancelled: &AtomicBool,
+    relaxed_bilibili: bool,
 ) -> AppResult<u64> {
     use crate::audio::pcm::PcmSource;
     use lofty::file::AudioFile;
@@ -769,11 +876,29 @@ fn validate_download_audio(
         }
     }
     // 临时文件后缀是 .part，必须根据实际内容识别容器
-    let tagged = lofty::probe::Probe::open(path)
-        .map_err(|error| AppError::Audio(format!("Downloaded audio is unreadable: {error}")))?
-        .guess_file_type()?
-        .read()
-        .map_err(|error| AppError::Audio(format!("Downloaded audio is unreadable: {error}")))?;
+    let tagged_result = lofty::probe::Probe::open(path)
+        .map_err(|error| AppError::Audio(format!("Downloaded audio is unreadable: {error}")))
+        .and_then(|probe| {
+            probe
+                .guess_file_type()
+                .map_err(|error| AppError::Audio(format!("Downloaded audio is unreadable: {error}")))
+        })
+        .and_then(|probe| {
+            probe
+                .read()
+                .map_err(|error| AppError::Audio(format!("Downloaded audio is unreadable: {error}")))
+        });
+    let tagged = match tagged_result {
+        Ok(tagged) => Some(tagged),
+        Err(error) if relaxed_bilibili => {
+            log::warn!(
+                target: "download",
+                "B 站分片 MP4 没有可读的标签容器，改用解码器校验: {error}"
+            );
+            None
+        }
+        Err(error) => return Err(error),
+    };
     let mut decoder =
         crate::audio::remote::SymphoniaAudioDecoder::new_file(path).map_err(AppError::Audio)?;
     if decoder.next().is_none() {
@@ -781,21 +906,38 @@ fn validate_download_audio(
             "Downloaded file contains no decodable audio".into(),
         ));
     }
-    let header_duration_ms = tagged.properties().duration().as_millis() as u64;
+    let header_duration_ms = tagged
+        .as_ref()
+        .map(|tagged| tagged.properties().duration().as_millis() as u64)
+        .unwrap_or(0);
     // 分片 MP4 的头部时长可能为零，先用播放解码器信息，再按实际音频包时间轴确认
     let actual_duration_ms = if header_duration_ms > 0 {
         header_duration_ms
     } else if let Some(duration) = decoder.total_duration().filter(|duration| !duration.is_zero()) {
         duration.as_millis() as u64
+    } else if relaxed_bilibili {
+        match scan_download_duration(path, cancelled) {
+            Ok(duration) => duration,
+            Err(error) if !cancelled.load(Ordering::Relaxed) => {
+                log::warn!(target: "download", "B 站分片 MP4 无法扫描时长，按来源时长兜底: {error}");
+                0
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         scan_download_duration(path, cancelled)?
     };
-    if actual_duration_ms == 0 && (expected_duration_ms > 0 || expected_md5.is_some()) {
+    if actual_duration_ms == 0 && !relaxed_bilibili && (expected_duration_ms > 0 || expected_md5.is_some()) {
         return Err(AppError::Audio(
             "Cannot verify downloaded audio duration".into(),
         ));
     }
-    let tolerance_ms = (expected_duration_ms / 200).clamp(1000, 2000);
+    let tolerance_ms = if relaxed_bilibili {
+        // 来源时长是整段视频的长度，音轨常比它短几秒；偏差在这里不作为完整性证据
+        u64::MAX / 4
+    } else {
+        (expected_duration_ms / 200).clamp(1000, 2000)
+    };
     if expected_md5.is_none()
         && expected_duration_ms > 0
         && actual_duration_ms > 0
@@ -813,7 +955,12 @@ fn validate_download_audio(
     if cancelled.load(Ordering::Relaxed) {
         return Err(AppError::Other("Download cancelled".into()));
     }
-    Ok(actual_duration_ms)
+    // 分片 MP4 推导不出时长时退回来源时长，避免清单里落成 0 时长
+    Ok(if actual_duration_ms > 0 {
+        actual_duration_ms
+    } else {
+        expected_duration_ms
+    })
 }
 
 fn reserve_download_path(
@@ -1508,6 +1655,7 @@ async fn perform_download(
     };
     let validation_path = part_path.clone();
     let validation_cancel = cancel_flag.clone();
+    let relaxed_bilibili = source == "bilibili";
     let source_length = if stream_type == YtStreamType::Direct {
         expected_content_length
     } else {
@@ -1520,6 +1668,7 @@ async fn perform_download(
             expected_content_md5.as_deref(),
             duration_ms,
             &validation_cancel,
+            relaxed_bilibili,
         )
     })
     .await
@@ -1615,6 +1764,9 @@ async fn perform_download(
     metadata.download_finalized = Some(false);
     metadata.write(&file_path)?;
     let settings = crate::settings::store::load_settings(&app)?.settings;
+    // B 站 .m4s 常没有可写的标签容器、歌词/封面接口也更容易失败；
+    // 音频本体已经通过校验落盘，不应因附加元数据把整首下载判成失败。
+    let tolerant_metadata = track.source == "bilibili";
     if let Err(e) = write_download_sidecars(
         &client,
         &file_path,
@@ -1624,7 +1776,7 @@ async fn perform_download(
     )
     .await
     {
-        if settings.download_auto_fill_metadata {
+        if settings.download_auto_fill_metadata && !tolerant_metadata {
             return Err(e);
         }
         log::warn!(
@@ -1640,12 +1792,35 @@ async fn perform_download(
         let standardized = settings.download_embed_lyrics;
         let prepared = tokio::task::spawn_blocking(move || {
             metadata::prepare_audio_tags(&audio, &tag_metadata, standardized)
-        }).await.map_err(|error| AppError::Metadata(error.to_string()))??;
+        })
+        .await
+        .map_err(|error| AppError::Metadata(error.to_string()))?;
         if cancel_flag.load(Ordering::Relaxed) {
             return Err(AppError::Other("Download cancelled".into()));
         }
-        prepared.persist(&file_path).map_err(|error| AppError::Io(error.error))?;
-        "EMBEDDED_VERIFIED"
+        match prepared {
+            Ok(prepared) => match prepared.persist(&file_path) {
+                Ok(_) => "EMBEDDED_VERIFIED",
+                Err(error) if tolerant_metadata => {
+                    log::warn!(
+                        target: "download",
+                        "B 站音频标签写入失败，保留音频本体: track_id={}, error={}",
+                        track_id, error
+                    );
+                    "EMBED_FAILED"
+                }
+                Err(error) => return Err(AppError::Io(error.error)),
+            },
+            Err(error) if tolerant_metadata => {
+                log::warn!(
+                    target: "download",
+                    "B 站音频容器不支持标签，保留音频本体: track_id={}, error={}",
+                    track_id, error
+                );
+                "EMBED_FAILED"
+            }
+            Err(error) => return Err(error),
+        }
     } else {
         "USER_DISABLED"
     }.into());
@@ -1769,6 +1944,36 @@ pub async fn download_track(
                                 video_id.clone(),
                                 quality.clone(),
                                 avoid_direct,
+                            )
+                        },
+                        transfer,
+                    )
+                    .await
+                } else if let Some((bili_bvid, bili_avid, bili_cid)) =
+                    bili_download_target(&task_track_id, &album).filter(|_| source == "bilibili")
+                {
+                    // B 站直链过期(403/410)时必须重新解析，且每次换一个 CDN，
+                    // 不能像其它源那样把同一个签名 URL 拿出来反复重试。
+                    let settings = crate::settings::store::load_settings(&app_handle)?.settings;
+                    let quality = if settings.download_follow_playback_quality {
+                        settings.bili_quality
+                    } else {
+                        settings.download_bili_quality
+                    };
+                    let rotation = Arc::new(AtomicUsize::new(1));
+                    let refresh_app = app_handle.clone();
+                    recovery::run(
+                        initial,
+                        task_cancel_flag.clone(),
+                        Duration::from_secs(1),
+                        move |_| {
+                            refresh_bilibili_download_source(
+                                refresh_app.clone(),
+                                bili_bvid.clone(),
+                                bili_avid,
+                                bili_cid,
+                                quality.clone(),
+                                rotation.clone(),
                             )
                         },
                         transfer,
@@ -2233,18 +2438,29 @@ mod tests {
                 Some(bytes.len() as u64),
                 Some(&checksum),
                 275_000,
-                &cancelled
+                &cancelled,
+                false
             )
             .unwrap()
                 > 0
         );
         assert!(
-            validate_download_audio(&path, None, Some(&"00".repeat(16)), 0, &cancelled).is_err()
-        );
-        assert!(validate_download_audio(&path, None, None, 275_000, &cancelled).is_err());
-        assert!(
-            validate_download_audio(&path, Some(bytes.len() as u64 + 1), None, 0, &cancelled)
+            validate_download_audio(&path, None, Some(&"00".repeat(16)), 0, &cancelled, false)
                 .is_err()
+        );
+        assert!(
+            validate_download_audio(&path, None, None, 275_000, &cancelled, false).is_err()
+        );
+        assert!(
+            validate_download_audio(
+                &path,
+                Some(bytes.len() as u64 + 1),
+                None,
+                0,
+                &cancelled,
+                false
+            )
+            .is_err()
         );
     }
 
@@ -2253,10 +2469,14 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("audio.part");
         std::fs::write(&path, b"<html>Access denied</html>").unwrap();
-        assert!(validate_download_audio(&path, None, None, 0, &AtomicBool::new(false)).is_err());
+        assert!(
+            validate_download_audio(&path, None, None, 0, &AtomicBool::new(false), false).is_err()
+        );
         let bytes = include_bytes!("../audio/fixtures/hls-silence.aac");
         std::fs::write(&path, bytes).unwrap();
-        assert!(validate_download_audio(&path, None, None, 0, &AtomicBool::new(true)).is_err());
+        assert!(
+            validate_download_audio(&path, None, None, 0, &AtomicBool::new(true), false).is_err()
+        );
     }
 
     #[test]
@@ -2279,16 +2499,58 @@ mod tests {
         );
         let cancelled = AtomicBool::new(false);
         assert_eq!(
-            validate_download_audio(&path, Some(bytes.len() as u64), None, 192, &cancelled).unwrap(),
+            validate_download_audio(&path, Some(bytes.len() as u64), None, 192, &cancelled, false)
+                .unwrap(),
             192
         );
         assert!(
-            validate_download_audio(&path, None, None, 20_000, &cancelled).is_err(),
+            validate_download_audio(&path, None, None, 20_000, &cancelled, false).is_err(),
             "可解码不代表时长匹配"
         );
         assert!(
-            validate_download_audio(&path, None, None, 192, &AtomicBool::new(true)).is_err()
+            validate_download_audio(&path, None, None, 192, &AtomicBool::new(true), false).is_err()
         );
+    }
+
+    /// B 站来源时长是视频长度，音轨常短几秒；严格校验会把合法的 .m4s 判成失败
+    #[test]
+    fn bilibili_download_tolerates_video_duration_mismatch_but_others_do_not() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("audio.part");
+        let mut bytes = include_bytes!("../audio/fixtures/hls-init.mp4").to_vec();
+        bytes.extend_from_slice(include_bytes!("../audio/fixtures/hls-segment.m4s"));
+        std::fs::write(&path, &bytes).unwrap();
+        let cancelled = AtomicBool::new(false);
+        assert!(
+            validate_download_audio(&path, Some(bytes.len() as u64), None, 20_000, &cancelled, true)
+                .is_ok()
+        );
+        assert!(
+            validate_download_audio(&path, None, None, 20_000, &cancelled, false).is_err()
+        );
+        // 取消仍然优先，宽松模式不能吞掉取消
+        assert!(
+            validate_download_audio(&path, None, None, 192, &AtomicBool::new(true), true).is_err()
+        );
+    }
+
+    #[test]
+    fn bilibili_download_target_restores_multipart_cid() {
+        assert_eq!(
+            bili_download_target("bilibili:BV1xx411c7mD", "Bilibili|1234567|BV1xx411c7mD"),
+            Some(("BV1xx411c7mD".into(), None, Some(1_234_567)))
+        );
+        assert_eq!(
+            bili_download_target("bilibili:170001", "Bilibili|9876|BV1aa"),
+            Some(("BV1aa".into(), Some(170_001), Some(9_876)))
+        );
+        // 没有 album 标记时由 playurl 重新查 cid，不能把 avid 当成 bvid
+        assert_eq!(
+            bili_download_target("bilibili:170001", ""),
+            Some((String::new(), Some(170_001), None))
+        );
+        assert_eq!(bili_download_target("netease:123", ""), None);
+        assert_eq!(bili_download_target("bilibili:", ""), None);
     }
 
     /// 回归：网易云把 FLAC 标成 audio/mpeg，按 Content-Type 命名会把 FLAC 存成 .mp3
@@ -2306,12 +2568,14 @@ mod tests {
         let mut ogg_opus = b"OggS\x00\x02".to_vec();
         ogg_opus.extend([0u8; 22]);
         ogg_opus.extend_from_slice(b"OpusHead\x01\x02");
-        let cases: [(&str, &[u8], Option<&str>); 10] = [
+        let cases: [(&str, &[u8], Option<&str>); 11] = [
             ("flac", flac, Some("flac")),
             ("id3-flac", &tagged_flac, Some("flac")),
             ("id3-adts", &tagged_adts, Some("aac")),
             ("mp3", include_bytes!("../audio/fixtures/ffmpeg/mp3-stereo-1s.mp3"), Some("mp3")),
             ("m4a", include_bytes!("../audio/fixtures/ffmpeg/aac-stereo-1s.m4a"), Some("m4a")),
+            // B 站 DASH 分片以 moof 开头（没有 ftyp），必须仍识别成 m4a
+            ("fmp4-segment", include_bytes!("../audio/fixtures/hls-segment.m4s"), Some("m4a")),
             ("webm", include_bytes!("../audio/fixtures/ffmpeg/opus-stereo-1s.webm"), Some("webm")),
             ("wav", include_bytes!("../audio/fixtures/ffmpeg/pcm-s16-stereo-0.5s.wav"), Some("wav")),
             ("adts", adts, Some("aac")),

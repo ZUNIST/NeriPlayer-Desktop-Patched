@@ -311,7 +311,7 @@ pub async fn get_bili_audio_url(
 
 const BILI_VIDEO_INFO_UNAVAILABLE: &str = "Bilibili video info unavailable";
 
-async fn resolve_bili_playback_target(
+pub(crate) async fn resolve_bili_playback_target(
     client: &BiliClient,
     bvid: String,
     avid: Option<u64>,
@@ -379,7 +379,7 @@ fn split_legacy_bili_song_id(id: u64) -> Option<LegacyBiliSongId> {
     (avid > 0 && page > 0).then_some(LegacyBiliSongId { avid, page })
 }
 
-fn select_bili_audio_stream(
+pub(crate) fn select_bili_audio_stream(
     mut streams: Vec<BiliAudioStream>,
     quality: Option<&str>,
 ) -> Option<BiliAudioStream> {

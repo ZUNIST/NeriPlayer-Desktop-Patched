@@ -171,6 +171,20 @@ POST /weapi/comment/checktoken/get
 
 `401` 则表示歌曲已下架。经同批次对照测试（普通曲目返回 200），确认是**曲目级版权限制**，不是环境或登录问题。网易云用「环境异常」掩盖了真实原因，第三方客户端无法绕过。
 
+## 13. B 站（哔哩哔哩）源下载修复
+
+B 站 `fnval=272` 返回的是 DASH 音频分片（`.m4s`），原下载链路按「完整 mp3/flac」处理：容器认不出、拿视频时长做严格比对、写标签失败直接判失败、403 只重试同一个带签名的 URL。四件事叠加导致 B 站曲目几乎必然下载失败。本次全部改在 Rust 后端，前端调用方式不变：
+
+- **容器识别**：`downloaded_audio_extension()` 新增 `is_fragmented_mp4_head()`，按 ISO BMFF box 链认出以 `styp` / `sidx` / `moof` / `mdat` 起头的分片 MP4，存成 `.m4a`，而不是 Content-Type 兜底的 `.mp3`。
+- **宽松校验**：`validate_download_audio()` 新增 `relaxed_bilibili` 参数（仅 `source == "bilibili"` 打开）。lofty 读不出标签容器时降级用 symphonia 解码器验证；时长扫描不出来时退回来源时长；来源给的是**视频时长**、音轨常短几秒，因此跳过严格时长偏差判定。其它平台仍保持原有的 MD5 / 长度 / 时长 / 取消校验。
+- **403 重新解析 + CDN 轮换**：B 站下载改走 `recovery::run`，遇 403 / 401 / 410 / 5xx 由 `refresh_bilibili_download_source()` 重新走 playurl 取新签名直链，并依次轮换 `candidate_urls` 里的 backup CDN。`bili_download_target()` 从 `trackId` / `album` 还原 bvid / avid / cid，保证多 P 视频不会重新解析到第一 P。
+- **Range 对齐播放端**：`recovery::request()` 对 B 站 CDN 统一带 `Range: bytes=0-`（播放端本来就是这么拉的），避免边缘节点拒绝不带 Range 的整文件 GET；206 / 200 都按成功处理。
+- **附加元数据降级**：B 站下载时歌词/封面 sidecar 与音频标签写入失败只记 warning，状态记为 `EMBED_FAILED`，音频本体照常落盘入清单；其它源仍按原逻辑严格失败。
+
+单测：`download_cmd.rs` 增加分片容器识别、多 P 目标还原、B 站时长偏差放行（同时验证严格模式仍拒绝）；`download_recovery.rs` 用本地 HTTP 服务器验证 Range 头只加在 B 站 URL 上。
+
+**验证边界**：本机网络直连 B 站 playurl 被拦，无法抓真实 DASH 响应做端到端回归；以上按代码路径与仓库已有的 `hls-init.mp4` + `hls-segment.m4s` fixture 验证。若某条流仍失败，需要下载任务的具体报错文案再收窄处理。
+
 ---
 
 ## 构建

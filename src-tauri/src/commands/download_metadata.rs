@@ -527,6 +527,7 @@ pub(crate) fn prepare_audio_tags(
                 .verified_audio_duration_ms
                 .unwrap_or(metadata.duration_ms),
             &AtomicBool::new(false),
+            false,
         )? > 0;
     for (key, expected) in [
         (ItemKey::TrackTitle, metadata.name.as_deref()),
@@ -677,7 +678,8 @@ mod tests {
                 None,
                 None,
                 192,
-                &std::sync::atomic::AtomicBool::new(false)
+                &std::sync::atomic::AtomicBool::new(false),
+                false
             )
             .unwrap(),
             192

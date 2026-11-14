@@ -70,10 +70,16 @@ pub(super) async fn request(
     referer: &str,
     user_agent: &str,
 ) -> AppResult<reqwest::Response> {
-    let response = client
+    let mut request = client
         .get(url)
         .header("Referer", referer)
-        .header("User-Agent", user_agent)
+        .header("User-Agent", user_agent);
+    // B 站 DASH CDN 是按 Range 供分片的：不带 Range 的整文件 GET 常被边缘节点判 403，
+    // 而播放端始终用 Range 从 0 开始拉流。下载对齐播放端，206/200 都按成功处理。
+    if crate::commands::player_cmd::is_bili_stream_url(url) {
+        request = request.header("Range", "bytes=0-");
+    }
+    let response = request
         .send()
         .await
         .map_err(|error| AppError::Network(error.without_url()))?;
@@ -459,5 +465,39 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn bilibili_download_request_uses_range_like_playback() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = server.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let mut seen = Vec::new();
+            for _ in 0..2 {
+                let (mut socket, _) = server.accept().await.unwrap();
+                let mut buffer = [0u8; 2048];
+                let read = socket.read(&mut buffer).await.unwrap();
+                seen.push(String::from_utf8_lossy(&buffer[..read]).to_ascii_lowercase());
+                socket
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .unwrap();
+            }
+            seen
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let bili_url = format!("http://{address}/a.m4s?from=www.bilibili.com");
+        let plain_url = format!("http://{address}/a.mp3");
+        let _ = request(&client, &bili_url, "fixture", "fixture").await.unwrap();
+        let _ = request(&client, &plain_url, "fixture", "fixture").await.unwrap();
+        let seen = tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(seen[0].contains("range: bytes=0-"), "B 站直链应带 Range");
+        assert!(!seen[1].contains("range:"), "其它平台不应被影响");
     }
 }

@@ -1654,7 +1654,7 @@ pub async fn crossfade_file(
 }
 
 /// B 站音频流：bilivideo CDN 与 `*.mountaintoys.cn` 边缘节点（对齐 Android BiliStreamUrls）
-fn is_bili_stream_url(url: &str) -> bool {
+pub(crate) fn is_bili_stream_url(url: &str) -> bool {
     if url.contains("bilibili.com") {
         return true;
     }
