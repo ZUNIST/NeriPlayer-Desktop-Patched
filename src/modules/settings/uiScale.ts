@@ -48,7 +48,10 @@ export async function installUiScale(settings: { uiScale: number }): Promise<Wat
   const appWindow = getCurrentWindow()
   const unlisten: Array<() => void> = []
 
-  function apply(value: number): Promise<void> {
+  // resizeWindow 只给「用户主动改缩放」用。窗口 resize 触发的刷新绝不能 setSize：
+  // 最大化/还原快速切换时，查询到的 maximized 与真正执行 setSize 时的窗口状态会错配，
+  // Windows 对最大化窗口 setSize 会直接取消最大化并停在普通尺寸（表现为窗口突然变小）。
+  function apply(value: number, resizeWindow = false): Promise<void> {
     pending = pending.then(async () => {
       if (!active) return
       const [inner, outer, dpi, monitor, maximized, fullscreen] = await Promise.all([
@@ -59,8 +62,13 @@ export async function installUiScale(settings: { uiScale: number }): Promise<Wat
       const frameHeight = Math.max(0, outer.height - inner.height)
       const availableWidth = monitor ? (monitor.workArea.size.width - frameWidth) / dpi : inner.width / dpi
       const availableHeight = monitor ? (monitor.workArea.size.height - frameHeight) / dpi : inner.height / dpi
+      // 缩放上限只看显示器工作区，不要掺入 outer-inner：最大化时 Windows 的不可见边框
+      // 会让 frameWidth/frameHeight 变化，进而改变 percent、改写 settings.uiScale，
+      // 触发 watch → resizeWindow → setSize，又回到窗口被拉回普通尺寸的问题。
+      const limitWidth = monitor ? monitor.workArea.size.width / dpi : availableWidth
+      const limitHeight = monitor ? monitor.workArea.size.height / dpi : availableHeight
       titlebarInset = isMacPlatform && !fullscreen ? MAC_TITLEBAR_HEIGHT : 0
-      uiScaleMax.value = uiScaleLimitForSize(availableWidth, availableHeight, titlebarInset)
+      uiScaleMax.value = uiScaleLimitForSize(limitWidth, limitHeight, titlebarInset)
       const percent = Math.min(normalizeUiScale(value), uiScaleMax.value)
       if (settings.uiScale === value && value !== percent) settings.uiScale = percent
       const factor = percent / 100
@@ -74,20 +82,32 @@ export async function installUiScale(settings: { uiScale: number }): Promise<Wat
         minimumDpi = dpi
         minimumInset = titlebarInset
       }
-      const width = Math.min(availableWidth, Math.max(inner.width / dpi, minWidth))
-      const height = Math.min(availableHeight, Math.max(inner.height / dpi, minHeight))
-      if (!maximized && !fullscreen && (Math.abs(width - inner.width / dpi) >= 1 || Math.abs(height - inner.height / dpi) >= 1)) {
-        await appWindow.setSize(new LogicalSize(width, height))
+      if (resizeWindow && !maximized && !fullscreen) {
+        // 二次确认：上面一组快照与这里之间隔着多次 IPC 往返，窗口状态可能已经变了。
+        // 用此刻的状态与尺寸重算，状态变了就放弃这次尺寸修正（缩放本身仍继续应用）。
+        const [stillMaximized, stillFullscreen, currentInner] = await Promise.all([
+          appWindow.isMaximized().catch(() => true),
+          appWindow.isFullscreen().catch(() => true),
+          appWindow.innerSize(),
+        ])
         if (!active) return
-        if (monitor) {
-          const position = await appWindow.outerPosition()
-          if (!active) return
-          const left = monitor.workArea.position.x
-          const top = monitor.workArea.position.y
-          const x = Math.max(left, Math.min(position.x, left + monitor.workArea.size.width - width * dpi - frameWidth))
-          const y = Math.max(top, Math.min(position.y, top + monitor.workArea.size.height - height * dpi - frameHeight))
-          if (x !== position.x || y !== position.y) await appWindow.setPosition(new PhysicalPosition(x, y))
-          if (!active) return
+        if (!stillMaximized && !stillFullscreen && currentInner.width > 0 && currentInner.height > 0) {
+          const width = Math.min(availableWidth, Math.max(currentInner.width / dpi, minWidth))
+          const height = Math.min(availableHeight, Math.max(currentInner.height / dpi, minHeight))
+          if (Math.abs(width - currentInner.width / dpi) >= 1 || Math.abs(height - currentInner.height / dpi) >= 1) {
+            await appWindow.setSize(new LogicalSize(width, height))
+            if (!active) return
+            if (monitor) {
+              const position = await appWindow.outerPosition()
+              if (!active) return
+              const left = monitor.workArea.position.x
+              const top = monitor.workArea.position.y
+              const x = Math.max(left, Math.min(position.x, left + monitor.workArea.size.width - width * dpi - frameWidth))
+              const y = Math.max(top, Math.min(position.y, top + monitor.workArea.size.height - height * dpi - frameHeight))
+              if (x !== position.x || y !== position.y) await appWindow.setPosition(new PhysicalPosition(x, y))
+              if (!active) return
+            }
+          }
         }
       }
       if (hasAppliedScale && percent === appliedScale) return
@@ -121,12 +141,14 @@ export async function installUiScale(settings: { uiScale: number }): Promise<Wat
     if (refreshTimer) clearTimeout(refreshTimer)
     refreshTimer = setTimeout(() => {
       refreshTimer = undefined
-      void apply(settings.uiScale)
+      // 只刷新缩放上限与 minSize；窗口尺寸交给原生状态恢复/用户拖动
+      void apply(settings.uiScale, false)
     }, 100)
   }
 
-  await apply(settings.uiScale)
-  const stop = watch(() => settings.uiScale, value => { void apply(value) })
+  // 启动时不要碰窗口尺寸：此时 Rust 侧正在恢复持久化的窗口状态
+  await apply(settings.uiScale, false)
+  const stop = watch(() => settings.uiScale, value => { void apply(value, true) })
   try {
     unlisten.push(await appWindow.onResized(scheduleRefresh))
     unlisten.push(await appWindow.onMoved(scheduleRefresh))

@@ -51,10 +51,11 @@ fn classify_playback_finish(
 }
 
 /// `main` 窗口显示后重新应用持久化的窗口状态。
-/// 插件恢复时窗口仍是隐藏的，Windows 下对隐藏窗口最大化无效，所以 show 之后再补一次。
-/// 这里不直接用 `restore_state`：它恢复 maximized 时仍会先按「最大化时记录的物理尺寸」
-/// set_size，刚 show 的窗口 maximize 偶发不生效就会停在中间尺寸——表现为启动时
-/// 窗口突然变小。改为分支处理：最大化时只 maximize（不 set_size），否则恢复原尺寸。
+///
+/// 不直接用 `restore_state`：它恢复 maximized 时仍会先按「最大化时记录的物理尺寸」
+/// set_size，刚 show 的窗口 maximize 偶发不生效就会停在中间尺寸。
+/// 此外，快速最大化/还原时插件会把「最大化时的物理尺寸」写成 `maximized: false`，
+/// 这类脏数据必须识别出来，否则启动后窗口会停在一个异常尺寸（表现为窗口突然变小）。
 #[tauri::command]
 fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
     use tauri_plugin_window_state::{StateFlags, WindowExt};
@@ -63,12 +64,9 @@ fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
             .restore_state(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
             .map_err(|error| error.to_string());
     }
-    let dir = window
-        .app_handle()
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let path = dir.join(".window-state.json");
+    let Some(path) = window_state_path(window.app_handle()) else {
+        return Ok(());
+    };
     let Ok(text) = std::fs::read_to_string(&path) else {
         return Ok(());
     };
@@ -81,7 +79,28 @@ fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
         return Ok(());
     };
 
-    if state.maximized {
+    let kind = classify_saved_size(&window, state);
+    if !state.maximized {
+        match kind {
+            SavedSizeKind::LooksMaximized => log::warn!(
+                target: "window",
+                "restored size {}x{} at ({}, {}) looks like a maximized window recorded as normal; maximizing instead",
+                state.width, state.height, state.x, state.y
+            ),
+            SavedSizeKind::Invalid => {
+                log::warn!(
+                    target: "window",
+                    "ignoring invalid restored window size {}x{}; keeping the default size",
+                    state.width, state.height
+                );
+                // 保留配置里的默认尺寸，连位置都不动，避免把窗口丢到屏幕外
+                return Ok(());
+            }
+            SavedSizeKind::Usable => {}
+        }
+    }
+
+    if state.maximized || kind == SavedSizeKind::LooksMaximized {
         // 最大化窗口的还原位置记录在 prev_*；绝不能把最大化时的尺寸当普通尺寸设置
         if state.prev_x != 0.0 || state.prev_y != 0.0 {
             let _ = window.set_position(tauri::PhysicalPosition::new(
@@ -104,12 +123,17 @@ fn apply_window_state(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 /// `tauri-plugin-window-state` 写出的 `.window-state.json` 条目。
-/// 字段类型按插件实际输出对齐，全部用 f64 兼容整数/浮点两种序列化形态。
+/// 字段类型按插件实际输出对齐，全部用 f64 兼容整数/浮点两种序列化形态；
+/// 允许缺字段，避免某个窗口的条目不完整导致整个文件解析失败。
 #[derive(serde::Deserialize)]
 struct SavedWindowState {
+    #[serde(default)]
     width: f64,
+    #[serde(default)]
     height: f64,
+    #[serde(default)]
     x: f64,
+    #[serde(default)]
     y: f64,
     #[serde(default)]
     prev_x: f64,
@@ -119,14 +143,68 @@ struct SavedWindowState {
     maximized: bool,
 }
 
+#[derive(PartialEq, Eq)]
+enum SavedSizeKind {
+    Usable,
+    LooksMaximized,
+    Invalid,
+}
+
+/// 判断持久化的尺寸能不能当普通窗口尺寸用。
+///
+/// 插件在快速最大化/还原时，`Resized` 事件里的 `is_maximized()` 与实际 `inner_size()`
+/// 会错配，把最大化时的物理尺寸 + 屏幕原点记成 `maximized: false`。也可能写入远小于
+/// 布局下限的值。这两种脏数据直接 set_size 都会让窗口尺寸异常。
+fn classify_saved_size(
+    window: &tauri::WebviewWindow,
+    state: &SavedWindowState,
+) -> SavedSizeKind {
+    let Ok(Some(monitor)) = window.current_monitor() else {
+        return SavedSizeKind::Usable;
+    };
+    let scale = monitor.scale_factor().max(1.0);
+    let screen = monitor.size();
+    let sw = screen.width as f64;
+    let sh = screen.height as f64;
+    // 插件通常写物理像素；兼容个别平台写逻辑像素的情况
+    let covers_screen = |w: f64, h: f64| w >= sw * 0.9 && h >= sh * 0.9;
+    let near_origin = state.x.abs() <= 16.0 && state.y.abs() <= 16.0;
+    if near_origin
+        && (covers_screen(state.width, state.height)
+            || covers_screen(state.width * scale, state.height * scale))
+    {
+        return SavedSizeKind::LooksMaximized;
+    }
+    // 布局下限 960x720（逻辑像素），留 20% 余量；同时排除超过屏幕的非法尺寸
+    let min_w = 960.0 * scale * 0.8;
+    let min_h = 720.0 * scale * 0.8;
+    if state.width < min_w || state.height < min_h || state.width > sw || state.height > sh {
+        return SavedSizeKind::Invalid;
+    }
+    SavedSizeKind::Usable
+}
+
+/// 插件用 `app_config_dir()` 写状态文件；Windows 上 `app_data_dir()` 与之相同。
+/// 优先与插件保持一致，读不到再回退，避免平台差异导致恢复/清理静默失效。
+fn window_state_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    use tauri::Manager;
+    for candidate in [app.path().app_config_dir(), app.path().app_data_dir()] {
+        if let Ok(dir) = candidate {
+            let path = dir.join(".window-state.json");
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 /// 清理状态文件里历史遗留的一次性验证窗口条目（label 带 uuid，永不复用），
 /// 配合插件的 `with_filter` 让文件不再无限膨胀。
 fn cleanup_window_state_file(app: &tauri::AppHandle) {
-    use tauri::Manager;
-    let Ok(dir) = app.path().app_data_dir() else {
+    let Some(path) = window_state_path(app) else {
         return;
     };
-    let path = dir.join(".window-state.json");
     let Ok(text) = std::fs::read_to_string(&path) else {
         return;
     };

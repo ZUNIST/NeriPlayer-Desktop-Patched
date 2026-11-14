@@ -227,6 +227,23 @@ App 内唯一指向「去哪获取新版本」的入口是 **设置 → 关于 �
 
 ---
 
+## 17. 再修「反复最大化 / 还原后窗口变小」
+
+第 15 节只覆盖「启动时恢复 `maximized: true`」这一条路径。实测短时间内连续最大化 / 最小化 3~4 次仍会触发窗口变小，原因是**另外两层竞态叠加**：
+
+1. **运行时被拉回普通尺寸**：`src/modules/settings/uiScale.ts` 的 `installUiScale()` 监听 `onResized` / `onMoved`，100ms debounce 后串行执行 `apply()`。`apply()` 开头用一次 `Promise.all` 取 `innerSize()` 与 `isMaximized()` 快照，之后又隔着 `setMinSize()` 等多次 IPC 才调用 `setSize(new LogicalSize(width, height))`。快速切换时快照与执行时刻错配；Windows 对**最大化窗口**调用 `setSize` 会直接取消最大化并停在传入的普通尺寸，而 `height` 又被 `Math.min(availableHeight, ...)` 夹到工作区高度，于是窗口稳定停在一个偏小的尺寸且不会自愈。`ui_scale_supported()` 在非 macOS 恒为 `true`，这条链路在 Windows 上始终启用。
+2. **状态文件被写脏**：`tauri-plugin-window-state` 的 `Resized` handler 与退出时 `update_state()` 都靠 `is_maximized()` 过滤，快速切换时同样错配，把「最大化时的物理尺寸 + 屏幕原点 (0,0)」写成 `maximized: false`。第 15 节的 `apply_window_state` 只处理 `maximized: true`，遇到这种条目会走 else 分支照常 `set_size(1728×1305)`，于是下次启动窗口依旧异常。
+
+修复：
+
+- `uiScale.ts`：`apply(value, resizeWindow = false)`。resize 触发的 `scheduleRefresh` **只刷新缩放上限与 `setMinSize`**，绝不再 `setSize` / `setPosition`；启动时也传 `false`，把窗口尺寸完全交给原生状态恢复。仅当用户主动修改 UI 缩放（`watch`）时才传 `true` 允许尺寸修正，且执行前**重新查询** `isMaximized` / `isFullscreen` / `innerSize` 二次确认，用此刻尺寸重算；状态已变就放弃尺寸修正（缩放本身照常应用）。另外把 `uiScaleLimitForSize()` 的入参改成**只依赖显示器工作区**，不再掺入 `outer - inner` 边框——最大化时 Windows 的不可见边框会变，会让 `percent` 抖动、改写 `settings.uiScale`、间接触发 `watch → setSize`。`setMinSize` 是原生下限约束，已足以阻止窗口被拖到布局之外。
+- `src-tauri/src/main.rs`：新增 `classify_saved_size()`，用 `window.current_monitor()` 的屏幕物理尺寸与 DPI 把持久化条目分为 `Usable` / `LooksMaximized` / `Invalid`。`maximized: false` 但尺寸覆盖约 90% 屏幕且位置贴近原点 → 判为 `LooksMaximized`，只 `maximize()` 不 `set_size`；尺寸小于布局下限 960×720 或超过屏幕 → 判为 `Invalid`，**完全不碰窗口**，保留配置默认尺寸。`SavedWindowState` 全部字段加 `#[serde(default)]`，避免单个条目缺字段导致整份文件解析失败。
+- 状态文件路径统一走 `window_state_path()`，优先 `app_config_dir()`（与插件写入一致），回退 `app_data_dir()`；`cleanup_window_state_file()` 复用同一函数。
+
+**验证边界**：本机 `.window-state.json` 在复现后确为 `{"main": {"width": 1728, "height": 1305, "maximized": false, "x": 0, "y": 0, "prev_x": -11, "prev_y": -11, ...}}`，与上述判断吻合；但快速切换属时序问题，仍需按「来回最大化 / 最小化 3~4 次」实际操作回归确认。
+
+---
+
 ## 构建
 
 ```bash
