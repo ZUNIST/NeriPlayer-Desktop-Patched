@@ -83,9 +83,12 @@ POST /weapi/comment/checktoken/get
 | `visible(true)` + builder `.position(-32000,-32000)` | 坐标被 Windows 忽略，回落居中 |
 | `visible(true)` + builder `.position(-4000,-4000)` | 仍居中（位置参数未生效） |
 | `visible(true)` + Win32 `SetWindowPos` 到 -4000 | 仍闪（窗口已在屏幕上画了一帧） |
-| **`visible(true)` + `always_on_bottom(true)`** | **当前采用**：被主窗口盖住，功能稳定，仅在主窗口非全屏时可能露出 |
+| `visible(true)` + `always_on_bottom(true)` | 曾采用：被主窗口盖住，功能稳定；主窗口非最大化时会露出白窗，已弃用 |
+| **`visible(false)` + WebView2 控制器 `SetIsVisible(true)`** | **当前采用**：窗口永不显示，页面仍报 `visible`，既不闪也不影响令牌 |
 
-**结论**：功能优先。窗口视觉上的残留需要更底层的处理（比如创建时即 0×0 再 resize），收益不大，暂不深究。
+**结论（2026-11-16 更新）**：关键是**把「窗口可见性」和「页面可见性」拆开**。`document.visibilityState` 由 WebView2 控制器的 `IsVisible` 决定，而不是由原生窗口是否在屏幕上决定（项目里最小化 / 收进托盘暂停渲染走的正是同一条通道，只是反向）。因此窗口用 `visible(false)` 创建后，对控制器调用 `SetIsVisible(true)`：页面认为自己在前台，watchman 正常签发令牌；窗口本身从不 show，也就不存在白底闪一帧的问题。
+
+此前几版都在「让窗口可见但不被看到」上做文章——挪到屏幕外、压到最底层——这类做法依赖坐标或 z-order，**显示器布局、缩放比例、主窗口是否最大化一变就会失效**，这正是「修好一段时间后又出现白窗」的来源。写法上曾用固定的 `-4000` 坐标，多屏或负坐标布局下可能正好落进某块屏。兜底路径因此改成按虚拟屏幕边界动态计算（`GetSystemMetrics(SM_XVIRTUALSCREEN/...)` + 右侧 64px），只在拿不到 WebView2 控制器时才启用。
 
 
 

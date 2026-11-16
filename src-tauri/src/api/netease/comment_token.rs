@@ -75,6 +75,90 @@ fn token_script(nonce: &str) -> String {
     )
 }
 
+/// 让取令牌窗口保持隐藏，同时让页面报告"可见"。
+///
+/// 窗口只要显示出来，就会露出 WebView 的白底（哪怕只合成一帧，用户看到的就是
+/// 「白色窗口闪一下」），所以这里不再 show：直接通过 WebView2 控制器把页面标为
+/// 可见。易盾 watchman 只看 `document.visibilityState`，并不关心原生窗口在不在
+/// 屏幕上，两者可以解耦——这与「最小化 / 收进托盘时设 false 暂停渲染」是同一条
+/// 通道的反向用法（见 `pause_rendering_while_minimized` / `set_page_visible`）。
+///
+/// 兜底：控制器拿不到或设置失败时退回「显示到所有显示器之外」，功能优先，
+/// 极端情况下可能闪一帧，但令牌仍能取到。
+fn keep_page_visible_without_showing(window: &WebviewWindow) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let ok = Arc::new(AtomicBool::new(true));
+    let flag = ok.clone();
+    let result = window.with_webview(move |webview| {
+        // SAFETY: with_webview 的回调在 UI 线程上执行，控制器在窗口存活期间有效
+        if let Err(error) = unsafe { webview.controller().SetIsVisible(true) } {
+            log::warn!(target: "comments", "comment token page visibility not set: {error}");
+            flag.store(false, Ordering::Relaxed);
+        }
+    });
+    if result.is_err() || !ok.load(Ordering::Relaxed) {
+        log::warn!(
+            target: "comments",
+            "comment token webview visibility unavailable, falling back to off-screen show"
+        );
+        show_off_screen(window);
+        return;
+    }
+    log::debug!(
+        target: "comments",
+        "comment token window stays hidden while the page reports visible"
+    );
+}
+
+/// 兜底路径：把窗口摆到所有显示器之外再显示，且不抢主窗口焦点。
+///
+/// 坐标按虚拟屏幕边界动态计算（写死 `-4000` 在显示器布局或缩放变化后可能正好
+/// 落进某块屏的可见区域，这正是「过一段时间又看到白窗」的来源）。
+fn show_off_screen(window: &WebviewWindow) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            GetSystemMetrics, SetWindowPos, ShowWindow, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+            SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+            SW_SHOWNOACTIVATE,
+        };
+
+        let Ok(handle) = window.hwnd() else {
+            let _ = window.show();
+            return;
+        };
+        let hwnd = handle.0 as *mut core::ffi::c_void;
+        // 所有显示器组成区域的最右下角之外，留 64px 余量
+        let (x, y) = unsafe {
+            (
+                GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXVIRTUALSCREEN) + 64,
+                GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN) + 64,
+            )
+        };
+        // 先同步 Tauri 侧记录的位置，再用 Win32 强制落位（封装层的 position 会被忽略）
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+        unsafe {
+            SetWindowPos(
+                hwnd,
+                std::ptr::null_mut(),
+                x,
+                y,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        log::debug!(target: "comments", "comment token window parked off-screen at ({x}, {y})");
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = window.set_position(tauri::PhysicalPosition::new(-4000, -4000));
+        let _ = window.show();
+    }
+}
+
 /// 每次写操作现取一次令牌（易盾令牌短时有效，Android 同样不缓存）
 pub async fn mint_comment_token(app: &AppHandle) -> AppResult<String> {
     let _access = ACCESS.lock().await;
@@ -91,11 +175,10 @@ pub async fn mint_comment_token(app: &AppHandle) -> AppResult<String> {
             &label,
             WebviewUrl::External(PAGE_URL.parse().expect("static URL")),
         )
-        // 窗口必须"可见"（visible），否则 document.visibilityState 为 hidden，易盾拒签令牌。
-        // 位置参数在部分 Windows 版本被忽略，于是改用"压到最底层"：
-        // always_on_bottom 让窗口永远被主窗口盖住，用户看不到；页面仍算可见。
-        .visible(true)
-        .position(-4000.0, -4000.0)
+        // 窗口始终不显示：一旦显示就会露出 WebView 白底（哪怕只合成一帧）。
+        // 页面需要的"可见"由 build 之后的 WebView2 控制器负责（见
+        // keep_page_visible_without_showing），窗口可见性与页面可见性解耦。
+        .visible(false)
         .inner_size(320.0, 480.0)
         .focused(false)
         .skip_taskbar(true)
@@ -121,28 +204,7 @@ pub async fn mint_comment_token(app: &AppHandle) -> AppResult<String> {
         .main_browser_args(&builder_app)
         .build()
         .map(|window| {
-            // Tauri 的 position() 在部分 Windows 版本会被忽略（窗口仍停在屏幕中央）。
-            // 先试封装层，再用 Win32 SetWindowPos 兜底强制挪出屏幕。
-            let _ = window.set_position(tauri::PhysicalPosition::new(-4000, -4000));
-            #[cfg(windows)]
-            {
-                use windows_sys::Win32::UI::WindowsAndMessaging::{
-                    SetWindowPos, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
-                };
-                if let Ok(handle) = window.hwnd() {
-                    unsafe {
-                        SetWindowPos(
-                            handle.0 as *mut core::ffi::c_void,
-                            std::ptr::null_mut(),
-                            -4000,
-                            -4000,
-                            0,
-                            0,
-                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-                        );
-                    }
-                }
-            }
+            keep_page_visible_without_showing(&window);
             WindowGuard(window)
         });
         let _ = created_tx.send(window);
