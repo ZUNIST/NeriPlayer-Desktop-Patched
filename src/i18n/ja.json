@@ -1471,6 +1471,8 @@
     "background_image": "カスタム背景",
     "background_image_desc": "アプリの背景画像を設定",
     "ambient_tint": "カバー色の染色",
+    "waveform_legacy_wave": "波アニメーション（旧版）",
+    "waveform_legacy_wave_desc": "オンにすると進行バーが左右に波打ちます。オフでは直線のままゆっくり呼吸します",
     "ambient_tint_desc": "再生中に再生ページの背景色で明るいページを淡く染めます。オフで元の白に戻ります",
     "ambient_tint_strength": "染色の強さ",
     "enhanced_advanced_blur": "高度なぼかし（拡張）",

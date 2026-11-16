@@ -1471,6 +1471,8 @@
     "background_image": "自定义背景图",
     "background_image_desc": "设置应用背景图片",
     "ambient_tint": "跟随封面染色",
+    "waveform_legacy_wave": "波浪动画（旧版）",
+    "waveform_legacy_wave_desc": "开启后进度条左右波动；关闭时保持平直，只做缓慢呼吸",
     "ambient_tint_desc": "播放时用播放页底色轻染浅色页面，关闭即恢复纯白",
     "ambient_tint_strength": "染色强度",
     "enhanced_advanced_blur": "进阶高级模糊",

@@ -11,10 +11,13 @@ const props = withDefaults(defineProps<{
   /** Suspended while a full-screen overlay covers the waveform in low performance mode:
    * the wave stays on its last frame and a watcher restarts it afterwards */
   suspended?: boolean
+  /** 设置里可切回旧版的左右波浪；默认 false 为「纯呼吸」 */
+  legacyWave?: boolean
 }>(), {
   activeColor: '#fff',
   inactiveColor: 'rgba(255,255,255,0.35)',
   suspended: false,
+  legacyWave: false,
 })
 
 const emit = defineEmits<{
@@ -27,6 +30,7 @@ const containerRef = ref<HTMLDivElement>()
 const svgRef = ref<SVGSVGElement>()
 const isDragging = ref(false)
 const dragProgress = ref(0)
+const pausePulse = ref(false)
 
 const WAVE_AMPLITUDE = 2
 // 固定 500 坐标的 SVG 约显示 12 个波，与 Android 播放页的可见密度一致
@@ -34,11 +38,20 @@ const WAVE_FREQ = 0.15
 const PHASE_CYCLE = 2000
 const AMP_TRANSITION = 500
 
+// 呼吸模式：整条线保持平直，只有已播放段的线宽在 2 → 3.6px 之间缓慢起伏。
+// 4.8s 一个完整呼吸，比旧波浪的 2s 相位周期慢一倍多，观感是「在呼吸」而不是「在抖」。
+const BREATH_CYCLE = 4800
+const BREATH_MIN_WIDTH = 2
+const BREATH_MAX_WIDTH = 3.6
+const BREATH_EASE = 70
+
 let phase = 0
 let currentAmp = 0
+let currentWidth = BREATH_MIN_WIDTH
 let animFrame = 0
 let lastTime = 0
 let looping = false
+let pulseTimer: ReturnType<typeof setTimeout> | undefined
 
 let pathActive: SVGPathElement | null = null
 let pathInactive: SVGPathElement | null = null
@@ -64,6 +77,15 @@ function wavePath(startX: number, endX: number, cy: number): string {
   return `${d} L ${endX} ${waveY(endX, cy)}`
 }
 
+// thumb 用 HTML div（不受 SVG preserveAspectRatio=none 影响），只改 transform：
+// left/top 定位会被按整像素绘制，进度走得快（短歌）时 thumb 一跳一跳地和线头错位
+function applyThumb(p: number, offsetY: number) {
+  if (!thumbTrack || !thumbDiv) return
+  thumbTrack.style.transform = `translate3d(${p * 100}%, 0, 0)`
+  thumbDiv.style.transform = `translate3d(-50%, calc(-50% + ${offsetY}px), 0)`
+  thumbDiv.style.width = thumbDiv.style.height = isDragging.value ? '12px' : '8px'
+}
+
 function animate(timestamp: number) {
   if (props.suspended) {
     looping = false
@@ -74,38 +96,51 @@ function animate(timestamp: number) {
   const dt = timestamp - lastTime
   lastTime = timestamp
 
-  phase += (dt / PHASE_CYCLE) * Math.PI * 2
-
-  const targetAmp = (props.isPlaying && !isDragging.value) ? WAVE_AMPLITUDE : 0
-  const ampStep = (WAVE_AMPLITUDE / AMP_TRANSITION) * dt
-  if (currentAmp < targetAmp) {
-    currentAmp = Math.min(targetAmp, currentAmp + ampStep)
-  } else if (currentAmp > targetAmp) {
-    currentAmp = Math.max(targetAmp, currentAmp - ampStep)
-  }
-
   const p = currentProgress.value
   const px = p * 500
-  if (pathInactive) pathInactive.setAttribute('d', wavePath(px, 500, 4))
-  if (pathActive) pathActive.setAttribute('d', wavePath(0, px, 4))
 
-  // thumb 用 HTML div（不受 SVG preserveAspectRatio=none 影响），只改 transform：
-  // left/top 定位会被按整像素绘制，进度走得快（短歌）时 thumb 一跳一跳地和线头错位
-  if (thumbTrack && thumbDiv) {
-    // viewBox 高 8 正好对应容器 8px，波形纵向偏移可直接当 px 用
-    const offsetY = waveY(px, 0)
-    thumbTrack.style.transform = `translate3d(${p * 100}%, 0, 0)`
-    thumbDiv.style.transform = `translate3d(-50%, calc(-50% + ${offsetY}px), 0)`
-    thumbDiv.style.width = thumbDiv.style.height = isDragging.value ? '12px' : '8px'
+  if (props.legacyWave) {
+    phase += (dt / PHASE_CYCLE) * Math.PI * 2
+    const targetAmp = (props.isPlaying && !isDragging.value) ? WAVE_AMPLITUDE : 0
+    const ampStep = (WAVE_AMPLITUDE / AMP_TRANSITION) * dt
+    if (currentAmp < targetAmp) {
+      currentAmp = Math.min(targetAmp, currentAmp + ampStep)
+    } else if (currentAmp > targetAmp) {
+      currentAmp = Math.max(targetAmp, currentAmp - ampStep)
+    }
+    if (pathInactive) pathInactive.setAttribute('d', wavePath(px, 500, 4))
+    if (pathActive) {
+      pathActive.setAttribute('d', wavePath(0, px, 4))
+      pathActive.style.strokeWidth = ''
+    }
+    applyThumb(p, waveY(px, 0))
+    if (currentAmp === 0 && targetAmp === 0) {
+      looping = false
+      lastTime = 0
+      return
+    }
+  } else {
+    // 用绝对时间算呼吸相位，窗口失焦或掉帧后不会累积漂移
+    const breath = 0.5 + 0.5 * Math.sin((timestamp / BREATH_CYCLE) * Math.PI * 2)
+    const target = (props.isPlaying && !isDragging.value)
+      ? BREATH_MIN_WIDTH + (BREATH_MAX_WIDTH - BREATH_MIN_WIDTH) * breath
+      : BREATH_MIN_WIDTH
+    // 指数趋近：播放时几乎无延迟地跟随呼吸曲线，暂停时约 300ms 平滑收回 2px
+    currentWidth += (target - currentWidth) * (1 - Math.exp(-dt / BREATH_EASE))
+    if (pathActive) {
+      pathActive.setAttribute('d', px > 0.5 ? `M 0 4 L ${px} 4` : 'M 0 4')
+      pathActive.style.strokeWidth = currentWidth.toFixed(2)
+    }
+    if (pathInactive) pathInactive.setAttribute('d', `M ${px} 4 L 500 4`)
+    applyThumb(p, 0)
+    // 空闲停表：不在播放且线宽已收敛回基准值时不再逐帧写 DOM
+    if (!props.isPlaying && Math.abs(currentWidth - BREATH_MIN_WIDTH) < 0.01) {
+      looping = false
+      lastTime = 0
+      return
+    }
   }
 
-  // 空闲停表：波幅已归零且目标为 0（暂停/静止）时不再逐帧重建两条 SVG path，
-  // 省 CPU/电；进度或播放态变化时由 watch 重启（MK-03）
-  if (currentAmp === 0 && targetAmp === 0) {
-    looping = false
-    lastTime = 0
-    return
-  }
   animFrame = scheduleFrame(animate)
 }
 
@@ -125,13 +160,25 @@ onMounted(() => {
   startLoop()
 })
 
-// 播放态/拖拽/进度变化时重启渲染循环（停表后需要更新一帧位置或恢复波动）
+// 播放态/拖拽/进度变化时重启渲染循环（停表后需要更新一帧位置或恢复呼吸）
 watch(() => props.isPlaying, startLoop)
 watch(() => props.suspended, startLoop)
+watch(() => props.legacyWave, startLoop)
 watch(isDragging, startLoop)
 watch(currentProgress, startLoop)
+
+// 暂停瞬间播放头扩散一次光晕作为收尾；旧波浪模式不做
+watch(() => props.isPlaying, playing => {
+  if (playing || props.legacyWave) return
+  if (pulseTimer) clearTimeout(pulseTimer)
+  pausePulse.value = false
+  requestAnimationFrame(() => { pausePulse.value = true })
+  pulseTimer = setTimeout(() => { pausePulse.value = false }, 380)
+})
+
 onUnmounted(() => {
   cancelFrame(animFrame)
+  if (pulseTimer) clearTimeout(pulseTimer)
   // 拖拽中被重建（切歌时按 key 重建）时兜底复位；pointer capture 随元素销毁自动释放
   isDragging.value = false
 })
@@ -195,7 +242,7 @@ function clamp01(v: number) { return Math.max(0, Math.min(1, v)) }
     </svg>
     <!-- thumb 独立于 SVG，不受拉伸影响；外层与容器同宽，translateX 百分比即进度 -->
     <div class="thumb-track">
-      <div class="thumb" />
+      <div class="thumb" :class="{ 'thumb--pulse': pausePulse }" />
     </div>
   </div>
 </template>
@@ -259,5 +306,16 @@ function clamp01(v: number) { return Math.max(0, Math.min(1, v)) }
               box-shadow 0.72s cubic-bezier(0.22, 1, 0.36, 1);
   box-shadow: 0 0 4px rgba(255, 255, 255, 0.3);
   will-change: transform;
+}
+
+/* 暂停瞬间：光晕扩散一次再收回，不改尺寸，避免与拖拽时的 12px 逻辑打架 */
+.thumb--pulse {
+  animation: thumb-pulse 360ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes thumb-pulse {
+  0% { box-shadow: 0 0 4px rgba(255, 255, 255, 0.3); }
+  42% { box-shadow: 0 0 0 7px rgba(255, 255, 255, 0.14); }
+  100% { box-shadow: 0 0 4px rgba(255, 255, 255, 0.3); }
 }
 </style>

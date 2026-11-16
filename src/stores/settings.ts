@@ -104,6 +104,8 @@ export interface AppSettings {
   ambientTint: boolean
   /** 染色强度 0.04–0.32，默认 0.12 */
   ambientTintStrength: number
+  /** 播放页进度条是否恢复旧版的左右波浪；默认 false = 纯呼吸 */
+  waveformLegacyWave: boolean
   backgroundImageUri: string
   backgroundImageBlur: number
   backgroundImageAlpha: number
@@ -281,6 +283,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   exploreSearchHistoryEnabled: true,
   ambientTint: false,
   ambientTintStrength: 0.12,
+  waveformLegacyWave: false,
   backgroundImageUri: '',
   backgroundImageBlur: 20,
   backgroundImageAlpha: 0.3,
@@ -756,6 +759,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const exploreSearchHistoryEnabled = ref(initial.exploreSearchHistoryEnabled)
   const ambientTint = ref(initial.ambientTint)
   const ambientTintStrength = ref(initial.ambientTintStrength)
+  const waveformLegacyWave = ref(initial.waveformLegacyWave)
   const backgroundImageUri = ref(initial.backgroundImageUri)
   const backgroundImageBlur = ref(initial.backgroundImageBlur)
   const backgroundImageAlpha = ref(initial.backgroundImageAlpha)
@@ -815,7 +819,7 @@ export const useSettingsStore = defineStore('settings', () => {
     coverBlurAmount, coverBlurDarken, neteaseQuality, qqMusicQuality,
     youtubeQuality, biliQuality, bypassProxy, internationalizationEnabled, exploreSearchHistoryEnabled,
     youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
-    ambientTint, ambientTintStrength,
+    ambientTint, ambientTintStrength, waveformLegacyWave,
     backgroundImageUri, backgroundImageBlur, backgroundImageAlpha, backgroundImageDim, enhancedAdvancedBlur,
     enhancedAdvancedBlurRadius, devModeEnabled,
     logToFile, logLevel,
@@ -916,7 +920,7 @@ export const useSettingsStore = defineStore('settings', () => {
     colorMode, audioReactive, lowPerformanceMode, coverBlurBg, coverBlurAmount, coverBlurDarken,
     neteaseQuality, qqMusicQuality, youtubeQuality, biliQuality, bypassProxy,
     youtubePlaybackSource, neteaseAutoSourceSwitch, neteaseLocalSourceFallback,
-    internationalizationEnabled, exploreSearchHistoryEnabled, ambientTint, ambientTintStrength, backgroundImageUri, backgroundImageBlur,
+    internationalizationEnabled, exploreSearchHistoryEnabled, ambientTint, ambientTintStrength, waveformLegacyWave, backgroundImageUri, backgroundImageBlur,
     backgroundImageAlpha, backgroundImageDim, enhancedAdvancedBlur, enhancedAdvancedBlurRadius,
     devModeEnabled, logToFile, logLevel, maxCacheSize, downloadNameTemplate,
     downloadDir, ltServerUrl, ltNickname, ltAllowMemberControl,

@@ -121,7 +121,7 @@ const lt = useListenTogetherStore()
 const toast = useToastStore()
 const {
   darkMode, themeColor: selectedColor, coverStyle, appFontFamily, lyricFontFamily, uiScale,
-  defaultScreen, closeToTray, showMenuBarLyrics, showCoverBadge, showNowPlayingTitle, showToolbarDock,
+  defaultScreen, closeToTray, showMenuBarLyrics, showCoverBadge, showNowPlayingTitle, showToolbarDock, waveformLegacyWave,
   showQualitySwitch, lyricFontScale, lyricTranslationScale,
   normalizeVolume, multichannelDrc, volumeBalance, audioOutputDevice,
   fadeIn, fadeInDuration, fadeOutDuration,
@@ -1843,6 +1843,15 @@ useEscapeClose(
 
     <!-- 播放页 -->
         <div v-show="activeSettingsSection === 'now_playing'" class="settings-section-panel" data-section="now_playing">
+      <!-- 播放条动效：默认纯呼吸，可切回旧版波浪 -->
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">graphic_eq</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.waveform_legacy_wave') }}</div>
+          <div class="setting-desc">{{ t('settings.waveform_legacy_wave_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="waveformLegacyWave" /><span class="track"><span class="thumb"><span v-if="waveformLegacyWave" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
       <!-- 封面样式 -->
       <div class="setting-card">
         <div class="setting-icon-wrap"><span class="material-symbols-rounded">album</span></div>

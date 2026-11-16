@@ -31,7 +31,7 @@
 
 这些问题大多不是上游写得不好，而是平台接口变化和 Windows 窗口消息时序造成的。本仓库把能修的都修了，顺手补齐了几个缺失的交互。
 
-改动逐条记录在 [MODIFICATIONS.md](./MODIFICATIONS.md)，包含根因分析和踩坑记录，共 20 节。
+改动逐条记录在 [MODIFICATIONS.md](./MODIFICATIONS.md)，包含根因分析和踩坑记录，共 21 节。
 
 ## 与上游的差异
 

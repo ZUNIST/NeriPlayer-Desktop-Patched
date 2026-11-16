@@ -147,6 +147,8 @@ pub struct AppSettings {
     pub ambient_tint: bool,
     /// 染色强度 0.04–0.32
     pub ambient_tint_strength: f32,
+    /// 播放页进度条是否恢复旧版的左右波浪（默认 false = 纯呼吸）
+    pub waveform_legacy_wave: bool,
     pub background_image_uri: String,
     pub background_image_blur: f32,
     pub background_image_alpha: f32,
@@ -344,6 +346,7 @@ impl Default for AppSettings {
             explore_search_history_enabled: true,
             ambient_tint: false,
             ambient_tint_strength: 0.12,
+            waveform_legacy_wave: false,
             background_image_uri: String::new(),
             background_image_blur: 20.0,
             background_image_alpha: 0.3,

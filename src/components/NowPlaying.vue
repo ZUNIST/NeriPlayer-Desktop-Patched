@@ -2224,6 +2224,7 @@ const sliderActiveColor = computed(() => dynamicColorVars.value['--np-primary'] 
             :is-playing="player.isPlaying"
             :suspended="frameLoopSuspended"
             :active-color="sliderActiveColor"
+            :legacy-wave="settings.waveformLegacyWave"
             @seek="onSeek"
             @preview="onSliderPreview"
             @preview-end="onSliderPreviewEnd"

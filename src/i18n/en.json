@@ -1471,6 +1471,8 @@
     "background_image": "Custom Background",
     "background_image_desc": "Set a custom app background image",
     "ambient_tint": "Cover color tint",
+    "waveform_legacy_wave": "Legacy wave animation",
+    "waveform_legacy_wave_desc": "Wave the progress line left and right; off keeps it straight and only breathes",
     "ambient_tint_desc": "Tint light pages with the now-playing background color while music plays; turn off to restore plain white",
     "ambient_tint_strength": "Tint strength",
     "enhanced_advanced_blur": "Enhanced Advanced Blur",
